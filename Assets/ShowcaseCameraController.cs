@@ -1,0 +1,1608 @@
+using System.Collections.Generic;
+using UnityEngine;
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
+
+/// <summary>
+/// Camera navigation controller and in-game vessel manipulation authority.
+/// - Controls player camera with WASD, Right-Click Mouse Look, Shift (Sprint), Space/C (Up/Down).
+/// - Gives complete authority to move, drag, tilt, slosh, and reset bottles in Game mode.
+/// - Renders interactive 3D Gizmo Move Handles in Game mode on any selected vessel.
+/// </summary>
+public class ShowcaseCameraController : MonoBehaviour
+{
+    public enum CameraViewMode
+    {
+        TieredOverview,              // Frames all showcase lines
+        Week10_EnclosedCrackingLine, // Frames the 7 Week 10 enclosed cracking & outward flow structures
+        Week9_RealisticLine,         // Frames the 7 Week 9 realistic structures up close
+        Week2_ArbitraryLine,         // Frames the 12 arbitrary geometry containers up close
+        Week1_OriginalLine,          // Frames the 5 original containers
+        IndividualVesselFocus,       // Centers closely on a single selected vessel
+        FreeFly                      // Full WASD + Mouse Look spectator navigation
+    }
+
+    public enum GizmoAxis { None, X, Y, Z }
+    public enum GizmoToolMode { Move, Rotate }
+    public enum RotateAxis { None, Pitch, Yaw, Roll }
+
+    public static ShowcaseCameraController Instance { get; private set; }
+
+    [System.Serializable]
+    public class VesselEntry
+    {
+        public string Name;
+        public Transform Transform;
+        public Vector3 InitialPosition;
+        public Quaternion InitialRotation;
+        public ArbitraryViscousFluidFriction ArbitrarySim;
+        public ViscousLiquidWobble ViscousSim;
+        public LiquidWobble LiquidSim;
+        public Week9FluidDynamicsController Week9Sim;
+        public Week10FluidCrackingFlowController Week10Sim;
+        public UniversalAdaptiveFluidController UniversalSim;
+        public Collider Collider;
+
+        public void TriggerSlosh()
+        {
+            if (UniversalSim != null) UniversalSim.TriggerImpulseSlosh();
+            if (Week10Sim != null) Week10Sim.TriggerImpulseSlosh();
+            if (Week9Sim != null) Week9Sim.TriggerImpulseSlosh();
+            if (ArbitrarySim != null) ArbitrarySim.TriggerImpulseSlosh();
+            if (ViscousSim != null) ViscousSim.TestSlosh();
+            if (LiquidSim != null) LiquidSim.TestSlosh();
+        }
+
+        public void SetFluid(int idx)
+        {
+            if (UniversalSim != null) UniversalSim.ApplyFluidPreset((UniversalAdaptiveFluidController.FluidType)Mathf.Clamp(idx, 0, 6));
+            if (Week10Sim != null) Week10Sim.ApplyFluidPreset((Week10FluidType)Mathf.Clamp(idx, 0, 6));
+            if (Week9Sim != null) Week9Sim.ApplyFluidPreset((Week9FluidType)Mathf.Clamp(idx, 0, 6));
+            if (ArbitrarySim != null) ArbitrarySim.SetFluid((FluidSimType)Mathf.Clamp(idx, 0, 4));
+            if (ViscousSim != null) ViscousSim.SetFluidType((FluidDensityType)Mathf.Clamp(idx, 0, 4));
+        }
+
+        public void ResetToInitial()
+        {
+            if (Transform != null)
+            {
+                Transform.position = InitialPosition;
+                Transform.rotation = InitialRotation;
+            }
+            if (UniversalSim != null)
+            {
+                UniversalSim.ResetVessel();
+            }
+            if (Week10Sim != null)
+            {
+                Week10Sim.ResetVessel();
+            }
+        }
+
+        public string GetFluidName()
+        {
+            if (UniversalSim != null) return UniversalSim.fluidType.ToString();
+            if (Week10Sim != null) return Week10Sim.FluidType.ToString();
+            if (Week9Sim != null) return Week9Sim.FluidType.ToString();
+            if (ArbitrarySim != null) return ArbitrarySim.FluidType.ToString();
+            if (ViscousSim != null) return ViscousSim.FluidType.ToString();
+            if (LiquidSim != null) return "Water";
+            return "Fluid";
+        }
+    }
+
+    [Header("Camera Configuration")]
+    [SerializeField] private Camera targetCamera;
+    [SerializeField] private CameraViewMode currentMode = CameraViewMode.Week10_EnclosedCrackingLine;
+    [SerializeField] private float transitionSpeed = 5.0f;
+
+    [Header("Free Camera Controls (WASD + Right-Click)")]
+    [SerializeField] private float flySpeed = 5.0f;
+    [SerializeField] private float sprintMultiplier = 2.5f;
+    [SerializeField] private float lookSensitivity = 0.15f;
+
+    [Header("Target Positions")]
+    [SerializeField] private Vector3 overviewPos = new Vector3(0f, 1.8f, -9.0f);
+    [SerializeField] private Vector3 overviewRot = new Vector3(9f, 0f, 0f);
+
+    [SerializeField] private Vector3 week10LinePos = new Vector3(0f, 0.70f, -4.75f);
+    [SerializeField] private Vector3 week10LineRot = new Vector3(8f, 0f, 0f);
+
+    [SerializeField] private Vector3 week9LinePos = new Vector3(0f, 0.70f, -5.6f);
+    [SerializeField] private Vector3 week9LineRot = new Vector3(7f, 0f, 0f);
+
+    [SerializeField] private Vector3 week2LinePos = new Vector3(0f, 0.85f, -6.8f);
+    [SerializeField] private Vector3 week2LineRot = new Vector3(5f, 0f, 0f);
+
+    [SerializeField] private Vector3 week1LinePos = new Vector3(0f, 1.35f, -7.8f);
+    [SerializeField] private Vector3 week1LineRot = new Vector3(4f, 0f, 0f);
+
+    [Header("Vessel Authority & Manipulation")]
+    [SerializeField] private int activeVesselIndex = -1;
+    [SerializeField] private List<ArbitraryViscousFluidFriction> week2Vessels = new List<ArbitraryViscousFluidFriction>();
+    [SerializeField] private List<VesselEntry> allVessels = new List<VesselEntry>();
+
+    private Vector3 targetPos;
+    private Quaternion targetRot;
+    private float currentPitch = 8f;
+    private float currentYaw = 0f;
+    private bool isLookingWithMouse = false;
+    private bool showHUD = true;
+    [SerializeField] private bool showGizmos = false;
+
+    // Dragging and Rotation state
+    [Header("Gizmo Tool Mode")]
+    [SerializeField] private GizmoToolMode gizmoMode = GizmoToolMode.Move;
+    private bool isDraggingVessel = false;
+    private float dragPlaneDistance = 3.5f;
+    private Vector3 dragOffset = Vector3.zero;
+    private GizmoAxis activeGizmoAxis = GizmoAxis.None;
+    private RotateAxis activeRotateAxis = RotateAxis.None;
+
+    // Texture for OnGUI line drawing
+    private static Texture2D lineTex;
+    private Rect hudRect = new Rect(16, 52, 385, 520);
+
+    // DPI & Resolution Scaled GUI Styles
+    private GUIStyle bottomBtnStyle = null;
+    private GUIStyle bottomActionBtnStyle = null;
+    private GUIStyle bottomRestoreBtnStyle = null;
+    private GUIStyle bottomToggleBtnStyle = null;
+    private GUIStyle bottomRestartBtnStyle = null;
+    private GUIStyle bottomBadgeTitleStyle = null;
+    private GUIStyle bottomBadgeSubStyle = null;
+    private GUIStyle topBtnStyle = null;
+    private GUIStyle topStatusLabelStyle = null;
+    private float lastUiScale = -1f;
+
+    private void EnsureScaledGUIStyles(float scale)
+    {
+        if (bottomBtnStyle != null && Mathf.Approximately(lastUiScale, scale)) return;
+        lastUiScale = scale;
+
+        int baseBtnFont = Mathf.Clamp(Mathf.RoundToInt(15f * scale), 15, 24);
+        int actionBtnFont = Mathf.Clamp(Mathf.RoundToInt(16f * scale), 16, 26);
+        int topBtnFont = Mathf.Clamp(Mathf.RoundToInt(13f * scale), 13, 20);
+        int titleFont = Mathf.Clamp(Mathf.RoundToInt(15f * scale), 15, 24);
+        int subFont = Mathf.Clamp(Mathf.RoundToInt(13f * scale), 13, 19);
+
+        bottomBtnStyle = new GUIStyle(GUI.skin.button)
+        {
+            fontSize = baseBtnFont,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter
+        };
+
+        bottomActionBtnStyle = new GUIStyle(GUI.skin.button)
+        {
+            fontSize = actionBtnFont,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter
+        };
+
+        bottomRestoreBtnStyle = new GUIStyle(GUI.skin.button)
+        {
+            fontSize = actionBtnFont,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter
+        };
+
+        bottomToggleBtnStyle = new GUIStyle(GUI.skin.button)
+        {
+            fontSize = baseBtnFont,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter
+        };
+
+        bottomRestartBtnStyle = new GUIStyle(GUI.skin.button)
+        {
+            fontSize = baseBtnFont,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter
+        };
+
+        bottomBadgeTitleStyle = new GUIStyle(GUI.skin.label)
+        {
+            fontSize = titleFont,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleLeft
+        };
+        bottomBadgeTitleStyle.normal.textColor = Color.white;
+
+        bottomBadgeSubStyle = new GUIStyle(GUI.skin.label)
+        {
+            fontSize = subFont,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleLeft
+        };
+        bottomBadgeSubStyle.normal.textColor = new Color(0.45f, 0.85f, 1f);
+
+        topBtnStyle = new GUIStyle(GUI.skin.button)
+        {
+            fontSize = topBtnFont,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter
+        };
+
+        topStatusLabelStyle = new GUIStyle(GUI.skin.box)
+        {
+            fontSize = topBtnFont,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter
+        };
+        topStatusLabelStyle.normal.textColor = Color.white;
+    }
+
+    private void Awake()
+    {
+        Instance = this;
+        if (targetCamera == null) targetCamera = Camera.main;
+        if (targetCamera == null) targetCamera = GetComponent<Camera>();
+
+        RefreshAllVessels();
+        activeVesselIndex = allVessels.Count > 0 ? 0 : -1;
+        SetViewMode(CameraViewMode.Week10_EnclosedCrackingLine);
+    }
+
+    private void OnDestroy()
+    {
+        if (Instance == this) Instance = null;
+    }
+
+    public void FindWeek2Vessels()
+    {
+        RefreshAllVessels();
+    }
+
+    public void RefreshAllVessels()
+    {
+        allVessels.Clear();
+
+        // 0. Find Week 10 Enclosed Cracking & Outflow structures
+        var week10List = FindObjectsOfType<Week10FluidCrackingFlowController>();
+        System.Array.Sort(week10List, (a, b) => a.transform.position.x.CompareTo(b.transform.position.x));
+        foreach (var v in week10List)
+        {
+            if (v != null) RegisterVessel(v.name, v.transform, null, null, null, null, v, null);
+        }
+
+        // 0b. Find Universal Adaptive Fluid structures
+        var universalList = FindObjectsOfType<UniversalAdaptiveFluidController>();
+        System.Array.Sort(universalList, (a, b) => a.transform.position.x.CompareTo(b.transform.position.x));
+        foreach (var v in universalList)
+        {
+            if (v != null) RegisterVessel(v.name, v.transform, null, null, null, null, null, v);
+        }
+
+        // 1. Find Week 9 realistic dynamics structures
+        var week9List = FindObjectsOfType<Week9FluidDynamicsController>();
+        System.Array.Sort(week9List, (a, b) => a.transform.position.x.CompareTo(b.transform.position.x));
+        foreach (var v in week9List)
+        {
+            if (v != null) RegisterVessel(v.name, v.transform, null, null, null, v, null, null);
+        }
+
+        // 2. Find Week 8 arbitrary geometry vessels
+        var week2List = FindObjectsOfType<ArbitraryViscousFluidFriction>();
+        System.Array.Sort(week2List, (a, b) => a.transform.position.x.CompareTo(b.transform.position.x));
+        foreach (var v in week2List)
+        {
+            if (v != null) RegisterVessel(v.name, v.transform, v, null, null, null, null, null);
+        }
+
+        // 3. Find Week 7 baseline containers
+        var week1List = FindObjectsOfType<ViscousLiquidWobble>();
+        System.Array.Sort(week1List, (a, b) => a.transform.position.x.CompareTo(b.transform.position.x));
+        foreach (var v in week1List)
+        {
+            if (v != null) RegisterVessel(v.name, v.transform, null, v, null, null, null, null);
+        }
+
+        // 4. Find LiquidWobble original bottles
+        var origList = FindObjectsOfType<LiquidWobble>();
+        foreach (var v in origList)
+        {
+            if (v != null) RegisterVessel(v.name, v.transform, null, null, v, null, null, null);
+        }
+
+        // Maintain week2Vessels serialized list for backwards compatibility
+        week2Vessels.Clear();
+        week2Vessels.AddRange(week2List);
+    }
+
+    private void RegisterVessel(string name, Transform t, ArbitraryViscousFluidFriction arb, ViscousLiquidWobble visc, LiquidWobble liq, Week9FluidDynamicsController week9 = null, Week10FluidCrackingFlowController week10 = null, UniversalAdaptiveFluidController universal = null)
+    {
+        if (t == null) return;
+        if (allVessels.Exists(e => e.Transform == t)) return;
+
+        // Ensure every vessel has a collider so raycasting is 100% reliable
+        Collider col = t.GetComponentInChildren<Collider>();
+        if (col == null)
+        {
+            Renderer rend = t.GetComponentInChildren<Renderer>();
+            BoxCollider box = t.gameObject.AddComponent<BoxCollider>();
+            if (rend != null)
+            {
+                Bounds b = rend.bounds;
+                box.center = t.InverseTransformPoint(b.center);
+                Vector3 s = t.InverseTransformVector(b.size);
+                box.size = new Vector3(Mathf.Abs(s.x), Mathf.Abs(s.y), Mathf.Abs(s.z));
+                box.size = Vector3.Max(box.size, new Vector3(0.35f, 0.45f, 0.35f));
+            }
+            else
+            {
+                box.size = new Vector3(0.4f, 0.6f, 0.4f);
+            }
+            col = box;
+        }
+
+        var entry = new VesselEntry
+        {
+            Name = name,
+            Transform = t,
+            InitialPosition = t.position,
+            InitialRotation = t.rotation,
+            ArbitrarySim = arb,
+            ViscousSim = visc,
+            LiquidSim = liq,
+            Week9Sim = week9,
+            Week10Sim = week10,
+            UniversalSim = universal,
+            Collider = col
+        };
+        allVessels.Add(entry);
+    }
+
+    public VesselEntry GetSelectedVessel()
+    {
+        if (activeVesselIndex >= 0 && activeVesselIndex < allVessels.Count)
+        {
+            return allVessels[activeVesselIndex];
+        }
+        return null;
+    }
+
+    private VesselEntry FindVesselFromTransform(Transform hitTrans)
+    {
+        if (hitTrans == null) return null;
+        foreach (var v in allVessels)
+        {
+            if (v.Transform == null) continue;
+            if (hitTrans == v.Transform || hitTrans.IsChildOf(v.Transform))
+            {
+                return v;
+            }
+        }
+        return null;
+    }
+
+    private void Update()
+    {
+        HandleCameraAndGlobalInput();
+        HandleVesselAuthorityInput();
+        HandleMouseBottleInteraction();
+        UpdateCameraTransform();
+    }
+
+    private void HandleCameraAndGlobalInput()
+    {
+#if ENABLE_INPUT_SYSTEM
+        var kb = Keyboard.current;
+        var mouse = Mouse.current;
+        if (kb == null) return;
+
+        // View mode presets
+        if (kb.f1Key.wasPressedThisFrame) SetViewMode(CameraViewMode.TieredOverview);
+        if (kb.f2Key.wasPressedThisFrame) SetViewMode(CameraViewMode.Week2_ArbitraryLine);
+        if (kb.f3Key.wasPressedThisFrame) SetViewMode(CameraViewMode.Week1_OriginalLine);
+        if (kb.f4Key.wasPressedThisFrame) SetViewMode(CameraViewMode.IndividualVesselFocus);
+        if (kb.f5Key.wasPressedThisFrame) SetViewMode(CameraViewMode.FreeFly);
+        if (kb.f6Key.wasPressedThisFrame) SetViewMode(CameraViewMode.Week9_RealisticLine);
+        if (kb.f7Key.wasPressedThisFrame) SetViewMode(CameraViewMode.Week10_EnclosedCrackingLine);
+
+        // Toggle HUD
+        if (kb.hKey.wasPressedThisFrame) showHUD = !showHUD;
+
+        // Cycle vessel with Tab
+        if (kb.tabKey.wasPressedThisFrame) CycleVessel(1);
+
+        // Global impulse slosh with Space if no vessel is selected
+        if (kb.spaceKey.wasPressedThisFrame && activeVesselIndex < 0)
+        {
+            TriggerAllSlosh();
+        }
+
+        // Reset all bottles with Backspace
+        if (kb.backspaceKey.wasPressedThisFrame)
+        {
+            ResetAllBottles();
+        }
+
+        // Camera flight movement via W, A, S, D, Arrow Keys, Space/E (Up), C/Ctrl/Q (Down)
+        Vector3 moveInput = Vector3.zero;
+        bool isAltHeld = kb.leftAltKey.isPressed || kb.rightAltKey.isPressed;
+
+        // If Alt is NOT held, arrow keys fly the camera along with WASD
+        if (!isAltHeld)
+        {
+            if (kb.wKey.isPressed || kb.upArrowKey.isPressed) moveInput += targetCamera.transform.forward;
+            if (kb.sKey.isPressed || kb.downArrowKey.isPressed) moveInput -= targetCamera.transform.forward;
+            if (kb.dKey.isPressed || kb.rightArrowKey.isPressed) moveInput += targetCamera.transform.right;
+            if (kb.aKey.isPressed || kb.leftArrowKey.isPressed) moveInput -= targetCamera.transform.right;
+        }
+        else
+        {
+            if (kb.wKey.isPressed) moveInput += targetCamera.transform.forward;
+            if (kb.sKey.isPressed) moveInput -= targetCamera.transform.forward;
+            if (kb.dKey.isPressed) moveInput += targetCamera.transform.right;
+            if (kb.aKey.isPressed) moveInput -= targetCamera.transform.right;
+        }
+
+        if (kb.spaceKey.isPressed) moveInput += Vector3.up;
+        if (kb.leftCtrlKey.isPressed) moveInput -= Vector3.up;
+
+        bool wantsCameraMove = moveInput.sqrMagnitude > 0.001f;
+
+        // Free look with Right Mouse Button
+        bool isRightClick = mouse != null && mouse.rightButton.isPressed;
+        if (isRightClick)
+        {
+            if (!isLookingWithMouse)
+            {
+                isLookingWithMouse = true;
+                Cursor.lockState = CursorLockMode.Locked;
+                Cursor.visible = false;
+            }
+
+            Vector2 delta = mouse.delta.ReadValue();
+            currentYaw += delta.x * lookSensitivity;
+            currentPitch -= delta.y * lookSensitivity;
+            currentPitch = Mathf.Clamp(currentPitch, -85f, 85f);
+            targetRot = Quaternion.Euler(currentPitch, currentYaw, 0f);
+
+            if (currentMode != CameraViewMode.FreeFly)
+            {
+                currentMode = CameraViewMode.FreeFly;
+                targetPos = targetCamera.transform.position;
+            }
+        }
+        else if (isLookingWithMouse)
+        {
+            isLookingWithMouse = false;
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+        }
+
+        // Apply camera flight translation
+        if (wantsCameraMove)
+        {
+            if (currentMode != CameraViewMode.FreeFly)
+            {
+                currentMode = CameraViewMode.FreeFly;
+                targetPos = targetCamera.transform.position;
+                targetRot = targetCamera.transform.rotation;
+                Vector3 e = targetCamera.transform.eulerAngles;
+                currentPitch = e.x > 180f ? e.x - 360f : e.x;
+                currentYaw = e.y;
+            }
+
+            float speed = flySpeed * (kb.leftShiftKey.isPressed ? sprintMultiplier : 1f);
+            targetPos += moveInput.normalized * speed * Time.deltaTime;
+        }
+#endif
+    }
+
+    private void HandleVesselAuthorityInput()
+    {
+#if ENABLE_INPUT_SYSTEM
+        var kb = Keyboard.current;
+        if (kb == null) return;
+
+        VesselEntry sel = GetSelectedVessel();
+        if (sel == null || sel.Transform == null) return;
+
+        bool isAltHeld = kb.leftAltKey.isPressed || kb.rightAltKey.isPressed;
+
+        // 1. Reset selected bottle with R key
+        if (kb.rKey.wasPressedThisFrame)
+        {
+            sel.ResetToInitial();
+        }
+
+        // 2. Toggle Gizmo Tool Mode (Move / Rotate) with G key
+        if (kb.gKey.wasPressedThisFrame)
+        {
+            gizmoMode = (gizmoMode == GizmoToolMode.Move) ? GizmoToolMode.Rotate : GizmoToolMode.Move;
+        }
+
+        // 3. Direct 3D Rotation Authority (Roll with Q/E, Pitch with Z/C, Level with X)
+        if (kb.qKey.isPressed) sel.Transform.Rotate(Vector3.forward, 90f * Time.deltaTime, Space.World);
+        if (kb.eKey.isPressed) sel.Transform.Rotate(Vector3.forward, -90f * Time.deltaTime, Space.World);
+        if (kb.zKey.isPressed) sel.Transform.Rotate(Vector3.right, 90f * Time.deltaTime, Space.World);
+        if (kb.cKey.isPressed) sel.Transform.Rotate(Vector3.right, -90f * Time.deltaTime, Space.World);
+        if (kb.xKey.wasPressedThisFrame) sel.Transform.rotation = Quaternion.Euler(0f, sel.Transform.eulerAngles.y, 0f);
+
+        // Arrow keys rotate when in Rotate mode
+        if (gizmoMode == GizmoToolMode.Rotate)
+        {
+            float arrowRotSpeed = 90f * Time.deltaTime;
+            if (kb.leftArrowKey.isPressed) sel.Transform.Rotate(Vector3.up, -arrowRotSpeed, Space.World);
+            if (kb.rightArrowKey.isPressed) sel.Transform.Rotate(Vector3.up, arrowRotSpeed, Space.World);
+            if (kb.upArrowKey.isPressed) sel.Transform.Rotate(Vector3.right, -arrowRotSpeed, Space.World);
+            if (kb.downArrowKey.isPressed) sel.Transform.Rotate(Vector3.right, arrowRotSpeed, Space.World);
+        }
+
+        // 4. Slosh selected bottle with Space key ONLY when Alt is held (never during camera flight)
+        if (isAltHeld && kb.spaceKey.wasPressedThisFrame)
+        {
+            sel.TriggerSlosh();
+        }
+
+        // 5. Nudge selected bottle in 3D ONLY when Alt is held
+        if (isAltHeld)
+        {
+            float nudgeSpeed = 3.0f * Time.deltaTime;
+            Vector3 nudge = Vector3.zero;
+            if (kb.leftArrowKey.isPressed) nudge += Vector3.left;
+            if (kb.rightArrowKey.isPressed) nudge += Vector3.right;
+            if (kb.upArrowKey.isPressed)
+            {
+                if (kb.leftShiftKey.isPressed) nudge += Vector3.forward;
+                else nudge += Vector3.up;
+            }
+            if (kb.downArrowKey.isPressed)
+            {
+                if (kb.leftShiftKey.isPressed) nudge += Vector3.back;
+                else nudge += Vector3.down;
+            }
+            if (kb.pageUpKey.isPressed) nudge += Vector3.forward;
+            if (kb.pageDownKey.isPressed) nudge += Vector3.back;
+
+            if (nudge.sqrMagnitude > 0.001f)
+            {
+                sel.Transform.position += nudge.normalized * nudgeSpeed;
+            }
+        }
+
+        // 6. Switch fluid profile with 1-7 number keys
+        if (kb.digit1Key.wasPressedThisFrame) sel.SetFluid(0);
+        if (kb.digit2Key.wasPressedThisFrame) sel.SetFluid(1);
+        if (kb.digit3Key.wasPressedThisFrame) sel.SetFluid(2);
+        if (kb.digit4Key.wasPressedThisFrame) sel.SetFluid(3);
+        if (kb.digit5Key.wasPressedThisFrame) sel.SetFluid(4);
+        if (kb.digit6Key.wasPressedThisFrame) sel.SetFluid(5);
+        if (kb.digit7Key.wasPressedThisFrame) sel.SetFluid(6);
+
+        // 7. Week 10 Structural Cracking / Repair via [K] and [R] keys
+        if (kb.kKey.wasPressedThisFrame && sel.Week10Sim != null)
+        {
+            sel.Week10Sim.TriggerStructuralCrack();
+        }
+
+        // 8. Dynamic Fill Adjustment with [ and ] bracket keys
+        float fillDelta = (kb.rightBracketKey.isPressed ? 0.35f : 0f) - (kb.leftBracketKey.isPressed ? 0.35f : 0f);
+        if (Mathf.Abs(fillDelta) > 0.001f)
+        {
+            if (sel.Week10Sim != null)
+            {
+                sel.Week10Sim.fillAmount = Mathf.Clamp01(sel.Week10Sim.fillAmount + fillDelta * Time.deltaTime);
+                sel.Week10Sim.UpdateFillCutPlane(false);
+            }
+            else if (sel.Week9Sim != null)
+            {
+                sel.Week9Sim.fillAmount = Mathf.Clamp(sel.Week9Sim.fillAmount + fillDelta * Time.deltaTime, 0.02f, 0.98f);
+                sel.Week9Sim.UpdateFillCutPlane(false);
+            }
+        }
+#endif
+    }
+
+    private void HandleMouseBottleInteraction()
+    {
+#if ENABLE_INPUT_SYSTEM
+        var mouse = Mouse.current;
+        var kb = Keyboard.current;
+        if (mouse == null || targetCamera == null) return;
+
+        Vector2 mouseScreenPos = mouse.position.ReadValue();
+        Vector2 guiMousePos = new Vector2(mouseScreenPos.x, Screen.height - mouseScreenPos.y);
+
+        float uiScale = Mathf.Clamp(Screen.height / 1080f, 1.0f, 2.0f);
+        float barW = Mathf.Clamp(Screen.width - 48f, 700f, 1850f);
+        float barH = Mathf.Clamp(76f * uiScale, 70f, 96f);
+        float bottomMargin = 16f * uiScale;
+        float barX = (Screen.width - barW) * 0.5f;
+        Rect barRect = new Rect(barX, Screen.height - barH - bottomMargin, barW, barH + bottomMargin);
+
+        bool insideHUD = (showHUD && hudRect.Contains(guiMousePos)) || barRect.Contains(guiMousePos);
+        Ray ray = targetCamera.ScreenPointToRay(mouseScreenPos);
+
+        bool isShiftHeld = kb != null && (kb.leftShiftKey.isPressed || kb.rightShiftKey.isPressed);
+        bool isMiddlePressed = mouse.middleButton.wasPressedThisFrame;
+        bool isMiddleHeld = mouse.middleButton.isPressed;
+
+        // 1. Mouse Button Down (Left Click or Middle Click)
+        if ((mouse.leftButton.wasPressedThisFrame || isMiddlePressed) && !insideHUD)
+        {
+            VesselEntry sel = GetSelectedVessel();
+
+            // A. Check Gizmo handles if already selected and not using free-rotation modifiers
+            if (sel != null && sel.Transform != null && !isShiftHeld && !isMiddlePressed)
+            {
+                if (gizmoMode == GizmoToolMode.Move)
+                {
+                    GizmoAxis clickedAxis = CheckGizmoAxisClick(guiMousePos, sel.Transform.position);
+                    if (clickedAxis != GizmoAxis.None)
+                    {
+                        activeGizmoAxis = clickedAxis;
+                        return;
+                    }
+                }
+                else
+                {
+                    RotateAxis clickedRot = CheckRotateGizmoClick(guiMousePos, sel.Transform.position);
+                    if (clickedRot != RotateAxis.None)
+                    {
+                        activeRotateAxis = clickedRot;
+                        return;
+                    }
+                }
+            }
+
+            // B. Raycast to select & drag/rotate bottle
+            if (Physics.Raycast(ray, out RaycastHit hit, 100f))
+            {
+                VesselEntry hitVessel = FindVesselFromTransform(hit.collider.transform);
+                if (hitVessel != null)
+                {
+                    activeVesselIndex = allVessels.IndexOf(hitVessel);
+                    isDraggingVessel = true;
+
+                    // Compute distance from camera along forward axis
+                    dragPlaneDistance = Vector3.Dot(targetCamera.transform.forward, hitVessel.Transform.position - targetCamera.transform.position);
+                    float denom = Vector3.Dot(ray.direction, targetCamera.transform.forward);
+                    Vector3 planePoint = ray.origin + ray.direction * (dragPlaneDistance / Mathf.Max(0.001f, denom));
+                    dragOffset = hitVessel.Transform.position - planePoint;
+                    return;
+                }
+            }
+            else
+            {
+                // Clicked in empty space -> release any drag state
+                isDraggingVessel = false;
+                activeGizmoAxis = GizmoAxis.None;
+                activeRotateAxis = RotateAxis.None;
+            }
+        }
+
+        // 2. Continuous Dragging / Rotating while Left or Middle Button is Held
+        if (mouse.leftButton.isPressed || isMiddleHeld)
+        {
+            VesselEntry sel = GetSelectedVessel();
+            if (sel != null && sel.Transform != null)
+            {
+                Vector2 mouseDelta = mouse.delta.ReadValue();
+
+                bool isCtrlHeld = kb != null && (kb.leftCtrlKey.isPressed || kb.rightCtrlKey.isPressed);
+                bool isAltHeld = kb != null && (kb.leftAltKey.isPressed || kb.rightAltKey.isPressed);
+
+                // A. Direct Free 3D Rotation via Shift/Ctrl/Alt + Left Drag OR Middle-Click Drag OR Rotate Tool Mode Drag!
+                if ((isShiftHeld && mouse.leftButton.isPressed) ||
+                    (isCtrlHeld && mouse.leftButton.isPressed) ||
+                    (isAltHeld && mouse.leftButton.isPressed) ||
+                    isMiddleHeld ||
+                    (gizmoMode == GizmoToolMode.Rotate && isDraggingVessel))
+                {
+                    if (mouseDelta.sqrMagnitude > 0.001f)
+                    {
+                        float rotSens = 0.45f;
+                        sel.Transform.Rotate(targetCamera.transform.up, -mouseDelta.x * rotSens, Space.World);
+                        sel.Transform.Rotate(targetCamera.transform.right, mouseDelta.y * rotSens, Space.World);
+                    }
+                    return;
+                }
+
+                // B. Rotate Gizmo Axis Dragging
+                if (activeRotateAxis != RotateAxis.None)
+                {
+                    float rotAmount = (mouseDelta.x + mouseDelta.y) * 0.9f;
+                    switch (activeRotateAxis)
+                    {
+                        case RotateAxis.Pitch:
+                            sel.Transform.Rotate(Vector3.right, rotAmount, Space.World);
+                            break;
+                        case RotateAxis.Yaw:
+                            sel.Transform.Rotate(Vector3.up, -rotAmount, Space.World);
+                            break;
+                        case RotateAxis.Roll:
+                            sel.Transform.Rotate(Vector3.forward, -rotAmount, Space.World);
+                            break;
+                    }
+                    return;
+                }
+
+                // C. Move Gizmo Axis Dragging
+                if (activeGizmoAxis != GizmoAxis.None)
+                {
+                    Vector3 axisWorld = activeGizmoAxis == GizmoAxis.X ? Vector3.right :
+                                        activeGizmoAxis == GizmoAxis.Y ? Vector3.up : Vector3.forward;
+
+                    Vector3 scrTip = targetCamera.WorldToScreenPoint(sel.Transform.position + axisWorld);
+                    Vector3 scrBase = targetCamera.WorldToScreenPoint(sel.Transform.position);
+                    Vector2 scrDir = new Vector2(scrTip.x - scrBase.x, scrTip.y - scrBase.y).normalized;
+
+                    float moveAmount = Vector2.Dot(mouseDelta, scrDir) * 0.015f;
+                    sel.Transform.position += axisWorld * moveAmount;
+                    return;
+                }
+
+                // D. Free 3D Translation Dragging
+                if (isDraggingVessel)
+                {
+                    // Scroll wheel adjusts depth (push/pull)
+                    float scroll = mouse.scroll.ReadValue().y;
+                    if (Mathf.Abs(scroll) > 0.01f)
+                    {
+                        dragPlaneDistance = Mathf.Clamp(dragPlaneDistance + scroll * 0.002f, 0.5f, 25f);
+                    }
+
+                    float denom = Vector3.Dot(ray.direction, targetCamera.transform.forward);
+                    if (denom > 0.01f)
+                    {
+                        Vector3 planePoint = ray.origin + ray.direction * (dragPlaneDistance / denom);
+                        Vector3 desiredPos = planePoint + dragOffset;
+                        sel.Transform.position = Vector3.Lerp(sel.Transform.position, desiredPos, Time.deltaTime * 40f);
+                    }
+                }
+            }
+        }
+
+        // 3. Mouse Released
+        if (mouse.leftButton.wasReleasedThisFrame || mouse.middleButton.wasReleasedThisFrame)
+        {
+            isDraggingVessel = false;
+            activeGizmoAxis = GizmoAxis.None;
+            activeRotateAxis = RotateAxis.None;
+        }
+#endif
+    }
+
+    private GizmoAxis CheckGizmoAxisClick(Vector2 guiMousePos, Vector3 vesselWorldPos)
+    {
+        Vector3 origin = targetCamera.WorldToScreenPoint(vesselWorldPos);
+        if (origin.z <= 0.1f) return GizmoAxis.None;
+
+        float handleLen = 0.5f;
+        Vector3 scrX = targetCamera.WorldToScreenPoint(vesselWorldPos + Vector3.right * handleLen);
+        Vector3 scrY = targetCamera.WorldToScreenPoint(vesselWorldPos + Vector3.up * handleLen);
+        Vector3 scrZ = targetCamera.WorldToScreenPoint(vesselWorldPos + Vector3.forward * handleLen);
+
+        Vector2 ptX = new Vector2(scrX.x, Screen.height - scrX.y);
+        Vector2 ptY = new Vector2(scrY.x, Screen.height - scrY.y);
+        Vector2 ptZ = new Vector2(scrZ.x, Screen.height - scrZ.y);
+
+        float radius = 24f;
+        if (Vector2.Distance(guiMousePos, ptX) < radius) return GizmoAxis.X;
+        if (Vector2.Distance(guiMousePos, ptY) < radius) return GizmoAxis.Y;
+        if (Vector2.Distance(guiMousePos, ptZ) < radius) return GizmoAxis.Z;
+
+        return GizmoAxis.None;
+    }
+
+    private RotateAxis CheckRotateGizmoClick(Vector2 guiMousePos, Vector3 vesselWorldPos)
+    {
+        Vector3 origin = targetCamera.WorldToScreenPoint(vesselWorldPos);
+        if (origin.z <= 0.1f) return RotateAxis.None;
+
+        float handleOffset = 0.55f;
+        Vector3 scrPitch = targetCamera.WorldToScreenPoint(vesselWorldPos + targetCamera.transform.right * handleOffset);
+        Vector3 scrYaw = targetCamera.WorldToScreenPoint(vesselWorldPos + targetCamera.transform.up * handleOffset);
+        Vector3 scrRoll = targetCamera.WorldToScreenPoint(vesselWorldPos - targetCamera.transform.right * handleOffset);
+
+        Vector2 ptPitch = new Vector2(scrPitch.x, Screen.height - scrPitch.y);
+        Vector2 ptYaw = new Vector2(scrYaw.x, Screen.height - scrYaw.y);
+        Vector2 ptRoll = new Vector2(scrRoll.x, Screen.height - scrRoll.y);
+
+        float radius = 24f;
+        if (Vector2.Distance(guiMousePos, ptPitch) < radius) return RotateAxis.Pitch;
+        if (Vector2.Distance(guiMousePos, ptYaw) < radius) return RotateAxis.Yaw;
+        if (Vector2.Distance(guiMousePos, ptRoll) < radius) return RotateAxis.Roll;
+
+        return RotateAxis.None;
+    }
+
+    public void SetViewMode(CameraViewMode mode)
+    {
+        currentMode = mode;
+        switch (mode)
+        {
+            case CameraViewMode.TieredOverview:
+                targetPos = overviewPos;
+                targetRot = Quaternion.Euler(overviewRot);
+                break;
+            case CameraViewMode.Week10_EnclosedCrackingLine:
+                targetPos = week10LinePos;
+                targetRot = Quaternion.Euler(week10LineRot);
+                break;
+            case CameraViewMode.Week9_RealisticLine:
+                targetPos = week9LinePos;
+                targetRot = Quaternion.Euler(week9LineRot);
+                break;
+            case CameraViewMode.Week2_ArbitraryLine:
+                targetPos = week2LinePos;
+                targetRot = Quaternion.Euler(week2LineRot);
+                break;
+            case CameraViewMode.Week1_OriginalLine:
+                targetPos = week1LinePos;
+                targetRot = Quaternion.Euler(week1LineRot);
+                break;
+            case CameraViewMode.IndividualVesselFocus:
+                UpdateIndividualFocus();
+                break;
+            case CameraViewMode.FreeFly:
+                targetPos = targetCamera.transform.position;
+                targetRot = targetCamera.transform.rotation;
+                Vector3 e = targetCamera.transform.eulerAngles;
+                currentPitch = e.x > 180f ? e.x - 360f : e.x;
+                currentYaw = e.y;
+                break;
+        }
+    }
+
+    public void CycleVessel(int direction)
+    {
+        if (allVessels.Count == 0) RefreshAllVessels();
+        if (allVessels.Count == 0) return;
+
+        if (activeVesselIndex < 0) activeVesselIndex = 0;
+        else activeVesselIndex = (activeVesselIndex + direction + allVessels.Count) % allVessels.Count;
+
+        SetViewMode(CameraViewMode.IndividualVesselFocus);
+    }
+
+    private void UpdateIndividualFocus()
+    {
+        if (allVessels.Count == 0) RefreshAllVessels();
+        if (allVessels.Count == 0) return;
+
+        if (activeVesselIndex < 0 || activeVesselIndex >= allVessels.Count)
+        {
+            activeVesselIndex = 0;
+        }
+
+        var v = allVessels[activeVesselIndex];
+        if (v != null && v.Transform != null)
+        {
+            Vector3 vPos = v.Transform.position;
+            targetPos = vPos + new Vector3(0f, 0.35f, -2.55f);
+            targetRot = Quaternion.Euler(6.5f, 0f, 0f);
+        }
+    }
+
+    private void UpdateCameraTransform()
+    {
+        if (targetCamera == null) return;
+
+        if (currentMode == CameraViewMode.IndividualVesselFocus)
+        {
+            if (!isDraggingVessel && activeGizmoAxis == GizmoAxis.None && activeRotateAxis == RotateAxis.None)
+            {
+                UpdateIndividualFocus();
+            }
+        }
+
+        if (currentMode == CameraViewMode.FreeFly)
+        {
+            targetCamera.transform.position = Vector3.Lerp(targetCamera.transform.position, targetPos, Time.deltaTime * 32f);
+            targetCamera.transform.rotation = Quaternion.Slerp(targetCamera.transform.rotation, targetRot, Time.deltaTime * 32f);
+        }
+        else
+        {
+            targetCamera.transform.position = Vector3.Lerp(targetCamera.transform.position, targetPos, Time.deltaTime * transitionSpeed);
+            targetCamera.transform.rotation = Quaternion.Slerp(targetCamera.transform.rotation, targetRot, Time.deltaTime * transitionSpeed);
+        }
+    }
+
+    public void TriggerAllSlosh()
+    {
+        foreach (var v in allVessels)
+        {
+            if (v != null) v.TriggerSlosh();
+        }
+    }
+
+    public void ResetAllBottles()
+    {
+        foreach (var v in allVessels)
+        {
+            if (v != null) v.ResetToInitial();
+        }
+    }
+
+    private static void DrawScreenLine(Vector2 pointA, Vector2 pointB, Color color, float width = 2f)
+    {
+        if (lineTex == null)
+        {
+            lineTex = new Texture2D(1, 1);
+            lineTex.SetPixel(0, 0, Color.white);
+            lineTex.Apply();
+        }
+        Color saved = GUI.color;
+        GUI.color = color;
+        Vector2 d = pointB - pointA;
+        float angle = Mathf.Rad2Deg * Mathf.Atan2(d.y, d.x);
+        GUIUtility.RotateAroundPivot(angle, pointA);
+        GUI.DrawTexture(new Rect(pointA.x, pointA.y - width * 0.5f, d.magnitude, width), lineTex);
+        GUIUtility.RotateAroundPivot(-angle, pointA);
+        GUI.color = saved;
+    }
+
+    private void DrawGizmoHandle(Vector2 point, string label, Color color)
+    {
+        Color saved = GUI.backgroundColor;
+        GUI.backgroundColor = color;
+        GUI.Box(new Rect(point.x - 13, point.y - 13, 26, 26), $"<b>{label}</b>");
+        GUI.backgroundColor = saved;
+    }
+
+    private static void DrawScreenCircle(Vector2 center, float radius, Color color, int segments = 24)
+    {
+        float step = 360f / segments;
+        Vector2 prev = center + new Vector2(Mathf.Cos(0) * radius, Mathf.Sin(0) * radius);
+        for (int i = 1; i <= segments; i++)
+        {
+            float rad = i * step * Mathf.Deg2Rad;
+            Vector2 next = center + new Vector2(Mathf.Cos(rad) * radius, Mathf.Sin(rad) * radius);
+            DrawScreenLine(prev, next, color, 1.5f);
+            prev = next;
+        }
+    }
+
+    private void DrawInGameGizmo(VesselEntry sel)
+    {
+        if (sel == null || sel.Transform == null || isDraggingVessel || !showGizmos) return;
+
+        Vector3 worldPos = sel.Transform.position;
+        Vector3 scrOrigin = targetCamera.WorldToScreenPoint(worldPos);
+        if (scrOrigin.z <= 0.1f) return;
+
+        Vector2 guiOrigin = new Vector2(scrOrigin.x, Screen.height - scrOrigin.y);
+
+        if (gizmoMode == GizmoToolMode.Move)
+        {
+            float handleLen = 0.5f;
+            Vector3 scrX = targetCamera.WorldToScreenPoint(worldPos + Vector3.right * handleLen);
+            Vector3 scrY = targetCamera.WorldToScreenPoint(worldPos + Vector3.up * handleLen);
+            Vector3 scrZ = targetCamera.WorldToScreenPoint(worldPos + Vector3.forward * handleLen);
+
+            Vector2 ptX = new Vector2(scrX.x, Screen.height - scrX.y);
+            Vector2 ptY = new Vector2(scrY.x, Screen.height - scrY.y);
+            Vector2 ptZ = new Vector2(scrZ.x, Screen.height - scrZ.y);
+
+            // Draw 3D Move Axis Lines
+            DrawScreenLine(guiOrigin, ptX, new Color(1f, 0.25f, 0.25f, 0.9f), 3f);
+            DrawScreenLine(guiOrigin, ptY, new Color(0.25f, 1f, 0.25f, 0.9f), 3f);
+            DrawScreenLine(guiOrigin, ptZ, new Color(0.30f, 0.65f, 1f, 0.9f), 3f);
+
+            // Draw Handle Buttons
+            DrawGizmoHandle(ptX, "X", new Color(1f, 0.3f, 0.3f, 1f));
+            DrawGizmoHandle(ptY, "Y", new Color(0.3f, 1f, 0.3f, 1f));
+            DrawGizmoHandle(ptZ, "Z", new Color(0.3f, 0.7f, 1f, 1f));
+        }
+        else // Rotate Tool Mode
+        {
+            float ringDist = 0.55f;
+            Vector3 scrPitch = targetCamera.WorldToScreenPoint(worldPos + targetCamera.transform.right * ringDist);
+            Vector3 scrYaw = targetCamera.WorldToScreenPoint(worldPos + targetCamera.transform.up * ringDist);
+            Vector3 scrRoll = targetCamera.WorldToScreenPoint(worldPos - targetCamera.transform.right * ringDist);
+
+            Vector2 ptPitch = new Vector2(scrPitch.x, Screen.height - scrPitch.y);
+            Vector2 ptYaw = new Vector2(scrYaw.x, Screen.height - scrYaw.y);
+            Vector2 ptRoll = new Vector2(scrRoll.x, Screen.height - scrRoll.y);
+
+            // Draw circular guide arcs
+            DrawScreenCircle(guiOrigin, Vector2.Distance(guiOrigin, ptPitch), new Color(1f, 0.35f, 0.35f, 0.65f));
+            DrawScreenCircle(guiOrigin, Vector2.Distance(guiOrigin, ptYaw), new Color(0.35f, 1f, 0.35f, 0.65f));
+
+            // Draw Handle Buttons
+            DrawGizmoHandle(ptPitch, "Rx", new Color(1f, 0.3f, 0.3f, 1f));
+            DrawGizmoHandle(ptYaw, "Ry", new Color(0.3f, 1f, 0.3f, 1f));
+            DrawGizmoHandle(ptRoll, "Rz", new Color(0.3f, 0.7f, 1f, 1f));
+        }
+
+        // Floating name tag with active tool mode
+        GUI.Label(new Rect(guiOrigin.x - 140, guiOrigin.y - 42, 280, 24),
+            $"<b><color=#FFE066>▼ {sel.Name} ({sel.GetFluidName()}) [{(gizmoMode == GizmoToolMode.Move ? "MOVE" : "ROTATE")}]</color></b>");
+    }
+
+    private void OnGUI()
+    {
+        if (!Application.isPlaying) return;
+
+        float uiScale = Mathf.Clamp(Screen.height / 1080f, 1.15f, 2.2f);
+        EnsureScaledGUIStyles(uiScale);
+
+        VesselEntry sel = GetSelectedVessel();
+        if (showGizmos && sel != null && sel.Transform != null)
+        {
+            DrawInGameGizmo(sel);
+        }
+
+        // Top Control Bar: [👁 HIDE/SHOW CONTROLS] button + Quick Camera View Presets
+        float topBarH = 42f * uiScale;
+        float topBtnH = 34f * uiScale;
+        GUILayout.BeginArea(new Rect(16, 10, Screen.width - 32, topBarH));
+        GUILayout.BeginHorizontal();
+
+        GUI.backgroundColor = showHUD ? new Color(0.25f, 0.5f, 0.85f) : new Color(0.2f, 0.75f, 0.35f);
+        if (GUILayout.Button(showHUD ? "<b>👁 HIDE CONTROLS (H)</b>" : "<b>👁 SHOW CONTROLS (H)</b>", topBtnStyle, GUILayout.Width(220 * uiScale), GUILayout.Height(topBtnH)))
+        {
+            showHUD = !showHUD;
+        }
+        GUI.backgroundColor = Color.white;
+
+        GUILayout.Space(8 * uiScale);
+        if (GUILayout.Button("Line View [F7]", topBtnStyle, GUILayout.Width(130 * uiScale), GUILayout.Height(topBtnH))) SetViewMode(CameraViewMode.Week10_EnclosedCrackingLine);
+        if (GUILayout.Button("Overview [F1]", topBtnStyle, GUILayout.Width(130 * uiScale), GUILayout.Height(topBtnH))) SetViewMode(CameraViewMode.TieredOverview);
+
+        GUI.backgroundColor = showGizmos ? new Color(0.9f, 0.7f, 0.2f) : Color.white;
+        if (GUILayout.Button(showGizmos ? "Gizmos: ON [G]" : "Gizmos: OFF [G]", topBtnStyle, GUILayout.Width(145 * uiScale), GUILayout.Height(topBtnH))) showGizmos = !showGizmos;
+        GUI.backgroundColor = Color.white;
+
+        GUILayout.FlexibleSpace();
+        GUILayout.Label($"<b>Active Mode:</b> {currentMode} | <b>WASD:</b> Move Cam | <b>Right-Click Drag:</b> Free Look", topStatusLabelStyle, GUILayout.Height(topBtnH));
+        GUILayout.EndHorizontal();
+        GUILayout.EndArea();
+
+        // Dedicated Floating Bottom Action Bar for Week 10 Cracking, Outflow & Reset
+        DrawBottomActionBar(sel, uiScale);
+
+        if (!showHUD) return;
+
+        float hudW = Mathf.Clamp(460f * uiScale, 460f, 620f);
+        float hudH = Mathf.Clamp(580f * uiScale, 560f, Screen.height - 120f * uiScale);
+        hudRect = new Rect(16, 56f * uiScale, hudW, hudH);
+
+        GUI.backgroundColor = new Color(0.08f, 0.10f, 0.14f, 0.94f);
+        GUILayout.BeginArea(hudRect, GUI.skin.box);
+        GUI.backgroundColor = Color.white;
+
+        GUILayout.Label("<b>LIQUID SHADER SIMULATION - BOTTLE AUTHORITY</b>", GUI.skin.label);
+        GUILayout.Label($"<b>Camera:</b> {currentMode} | <b>WASD:</b> Move Camera | <b>Right-Click:</b> Free Look", GUI.skin.label);
+
+        // Camera Preset Buttons
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Overview [F1]")) SetViewMode(CameraViewMode.TieredOverview);
+        if (GUILayout.Button("Week 10 [F7]")) SetViewMode(CameraViewMode.Week10_EnclosedCrackingLine);
+        if (GUILayout.Button("Week 9 [F6]")) SetViewMode(CameraViewMode.Week9_RealisticLine);
+        if (GUILayout.Button("12-Vessels [F2]")) SetViewMode(CameraViewMode.Week2_ArbitraryLine);
+        if (GUILayout.Button("5-Bottles [F3]")) SetViewMode(CameraViewMode.Week1_OriginalLine);
+        if (GUILayout.Button("Free-Fly [F5]")) SetViewMode(CameraViewMode.FreeFly);
+        GUILayout.EndHorizontal();
+
+        GUILayout.Space(6);
+
+        // Selected Bottle Authority Section
+        if (sel != null && sel.Transform != null)
+        {
+            GUI.color = new Color(1f, 0.9f, 0.4f);
+            GUILayout.Label($"<b>★ BOTTLE AUTHORITY: {sel.Name}</b>", GUI.skin.label);
+            GUI.color = Color.white;
+
+            Vector3 euler = sel.Transform.eulerAngles;
+            GUILayout.Label($"<b>Fluid:</b> {sel.GetFluidName()} | <b>Pos:</b> ({sel.Transform.position.x:F2}, {sel.Transform.position.y:F2}, {sel.Transform.position.z:F2}) | <b>Rot:</b> ({euler.x:F0}°, {euler.y:F0}°, {euler.z:F0}°)");
+
+            // Gizmo Tool Mode Toggle
+            GUILayout.BeginHorizontal();
+            GUI.backgroundColor = gizmoMode == GizmoToolMode.Move ? new Color(0.2f, 0.8f, 0.4f) : Color.white;
+            if (GUILayout.Button("★ Move Tool [G]")) gizmoMode = GizmoToolMode.Move;
+            GUI.backgroundColor = gizmoMode == GizmoToolMode.Rotate ? new Color(0.2f, 0.8f, 0.4f) : Color.white;
+            if (GUILayout.Button("★ Rotate Tool [G]")) gizmoMode = GizmoToolMode.Rotate;
+            GUI.backgroundColor = Color.white;
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label("<i>Controls: Left-Drag: Move/Rotate | Shift+Drag / Middle-Drag: Free 3D Rotate | Q/E: Roll | Z/C: Pitch | X: Level</i>");
+
+            // Nudge Buttons along Axes
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("← X-")) sel.Transform.position += Vector3.left * 0.15f;
+            if (GUILayout.Button("X+ →")) sel.Transform.position += Vector3.right * 0.15f;
+            if (GUILayout.Button("↓ Y-")) sel.Transform.position += Vector3.down * 0.15f;
+            if (GUILayout.Button("↑ Y+")) sel.Transform.position += Vector3.up * 0.15f;
+            if (GUILayout.Button("Z- (Back)")) sel.Transform.position += Vector3.back * 0.15f;
+            if (GUILayout.Button("Z+ (Fwd)")) sel.Transform.position += Vector3.forward * 0.15f;
+            GUILayout.EndHorizontal();
+
+            // 3D Rotation Controls
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Pitch +15° (Z)")) sel.Transform.Rotate(Vector3.right, 15f, Space.World);
+            if (GUILayout.Button("Pitch -15° (C)")) sel.Transform.Rotate(Vector3.right, -15f, Space.World);
+            if (GUILayout.Button("Yaw +15°")) sel.Transform.Rotate(Vector3.up, 15f, Space.World);
+            if (GUILayout.Button("Yaw -15°")) sel.Transform.Rotate(Vector3.up, -15f, Space.World);
+            if (GUILayout.Button("Roll +15° (Q)")) sel.Transform.Rotate(Vector3.forward, 15f, Space.World);
+            if (GUILayout.Button("Roll -15° (E)")) sel.Transform.Rotate(Vector3.forward, -15f, Space.World);
+            GUILayout.EndHorizontal();
+
+            // Quick Orientations & Slosh
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Level Upright (0°) [X]")) sel.Transform.rotation = Quaternion.Euler(0f, sel.Transform.eulerAngles.y, 0f);
+            if (GUILayout.Button("Invert 180°")) sel.Transform.Rotate(Vector3.forward, 180f, Space.World);
+            if (GUILayout.Button("Impulse Slosh [Space]")) sel.TriggerSlosh();
+            GUILayout.EndHorizontal();
+
+            // Universal Adaptive Fluid Controls (Arbitrary Shapes & Future Meshes)
+            if (sel.UniversalSim != null)
+            {
+                GUILayout.Space(3);
+                GUI.color = new Color(0.35f, 0.95f, 1f);
+                GUILayout.Label("<b>UNIVERSAL ADAPTIVE FLUID (ANY ARBITRARY SHAPE):</b>", GUI.skin.label);
+                GUI.color = Color.white;
+
+                var uPreset = sel.UniversalSim.GetActivePreset();
+                GUILayout.Label($"\u03c1: <b>{uPreset.densityKgM3:F0} kg/m³</b> | \u03bc: <b>{uPreset.dynamicViscosityPaS:F4} Pa·s</b> | Preset: <b>{uPreset.name}</b>");
+
+                // Fill Amount Slider (Full 0.0 -> 1.0 Complete Fill Range)
+                GUILayout.BeginHorizontal();
+                GUILayout.Label($"Fill: <b>{sel.UniversalSim.fillAmount * 100f:F1}%</b> ([\\] keys)", GUILayout.Width(155));
+                float prevFillU = sel.UniversalSim.fillAmount;
+                sel.UniversalSim.fillAmount = GUILayout.HorizontalSlider(sel.UniversalSim.fillAmount, 0.0f, 1.0f);
+                if (Mathf.Abs(sel.UniversalSim.fillAmount - prevFillU) > 0.0005f)
+                {
+                    sel.UniversalSim.UpdateFillCutPlane(false);
+                }
+                GUILayout.EndHorizontal();
+
+                // Fill Status string
+                string fillStatus = sel.UniversalSim.fillAmount >= 0.999f
+                    ? "<color=#55FF88>★ COMPLETE FILL (Solid Ceiling Seal / No Slosh)</color>"
+                    : (sel.UniversalSim.fillAmount <= 0.001f
+                        ? "<color=#AAAAAA>★ EVACUATED (0% Empty)</color>"
+                        : $"Slosh Envelope \u03a8(F) = <b>{sel.UniversalSim.CurrentFillMagnitudeEnvelope:F2}</b>" +
+                          (sel.UniversalSim.fillAmount >= 0.40f && sel.UniversalSim.fillAmount <= 0.60f ? " <color=#FFE066>★ PEAK SLOSH</color>" : ""));
+                GUILayout.Label(fillStatus);
+
+                // Quick Fill Presets
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("0% Empty")) { sel.UniversalSim.fillAmount = 0.0f; sel.UniversalSim.UpdateFillCutPlane(false); }
+                if (GUILayout.Button("25%")) { sel.UniversalSim.fillAmount = 0.25f; sel.UniversalSim.UpdateFillCutPlane(false); }
+                if (GUILayout.Button("50%")) { sel.UniversalSim.fillAmount = 0.50f; sel.UniversalSim.UpdateFillCutPlane(false); }
+                if (GUILayout.Button("75%")) { sel.UniversalSim.fillAmount = 0.75f; sel.UniversalSim.UpdateFillCutPlane(false); }
+                GUI.backgroundColor = new Color(0.2f, 0.9f, 0.5f);
+                if (GUILayout.Button("★ 100% Full")) { sel.UniversalSim.fillAmount = 1.0f; sel.UniversalSim.UpdateFillCutPlane(false); }
+                GUI.backgroundColor = Color.white;
+                sel.UniversalSim.enableAutoFillDrainCycle = GUILayout.Toggle(sel.UniversalSim.enableAutoFillDrainCycle, "Auto Cycle");
+                GUILayout.EndHorizontal();
+
+                // Fracture & Outflow
+                GUILayout.Space(2);
+                GUILayout.BeginHorizontal();
+                if (sel.UniversalSim.isCracked)
+                {
+                    GUI.backgroundColor = new Color(0.3f, 0.85f, 0.4f);
+                    if (GUILayout.Button("<b>[REPAIR CRACK (R)]</b>")) sel.UniversalSim.RepairCrack();
+                    GUI.backgroundColor = Color.white;
+                }
+                else
+                {
+                    GUI.backgroundColor = new Color(1f, 0.35f, 0.25f);
+                    if (GUILayout.Button("<b>[CRACK ENCLOSURE (K)]</b>")) sel.UniversalSim.TriggerCrack();
+                    GUI.backgroundColor = Color.white;
+                }
+                GUILayout.EndHorizontal();
+
+                if (sel.UniversalSim.isCracked)
+                {
+                    string flowColor = sel.UniversalSim.IsOutflowing ? "#FF8844" : "#888888";
+                    GUILayout.Label($"<color={flowColor}><b>Breach:</b> OPEN ({sel.UniversalSim.breachDiameterMm:F1} mm) | Head \u0394h: <b>{sel.UniversalSim.CurrentHydrostaticHead * 100f:F1} cm</b></color>");
+                    GUILayout.Label($"<color={flowColor}><b>Exit Velocity:</b> {sel.UniversalSim.CurrentExitVelocity:F2} m/s | <b>Discharge Q:</b> {sel.UniversalSim.CurrentDischargeRateMlPerSec:F1} mL/s</color>");
+                }
+
+                // Fluid Switcher
+                GUILayout.Label("<b>Switch Realistic Fluid Preset:</b>");
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Petrol")) sel.SetFluid(0);
+                if (GUILayout.Button("Mercury")) sel.SetFluid(1);
+                if (GUILayout.Button("MotorOil")) sel.SetFluid(2);
+                if (GUILayout.Button("Coolant")) sel.SetFluid(3);
+                if (GUILayout.Button("CryoGas")) sel.SetFluid(4);
+                if (GUILayout.Button("TreeSap")) sel.SetFluid(5);
+                if (GUILayout.Button("MazeGel")) sel.SetFluid(6);
+                GUILayout.EndHorizontal();
+            }
+            // Week 10 Enclosed Structural Cracking & Dynamic Morphological Outflow Controls
+            else if (sel.Week10Sim != null)
+            {
+                GUILayout.Space(3);
+                GUI.color = new Color(1f, 0.55f, 0.25f);
+                GUILayout.Label("<b>WEEK 10 ENCLOSED MORPHOLOGY & CRACKING OUTFLOW:</b>", GUI.skin.label);
+                GUI.color = Color.white;
+
+                GUILayout.Label($"\u03c1: <b>{sel.Week10Sim.Density:F0} kg/m³</b> | \u03bc: <b>{sel.Week10Sim.DynamicViscosity:F4} Pa·s</b> | Geometry: <b>{sel.Week10Sim.vesselGeometry}</b>");
+
+                // Fill Amount Slider (Full 0.0 -> 1.0 Complete Fill Range)
+                GUILayout.BeginHorizontal();
+                GUILayout.Label($"Fill: <b>{sel.Week10Sim.fillAmount * 100f:F1}%</b> ([\\] keys)", GUILayout.Width(155));
+                float prevFill10 = sel.Week10Sim.fillAmount;
+                sel.Week10Sim.fillAmount = GUILayout.HorizontalSlider(sel.Week10Sim.fillAmount, 0.0f, 1.0f);
+                if (Mathf.Abs(sel.Week10Sim.fillAmount - prevFill10) > 0.0005f)
+                {
+                    sel.Week10Sim.UpdateFillCutPlane(false);
+                }
+                GUILayout.EndHorizontal();
+
+                // Fill Status string (Complete Fill, Active Slosh, Evacuated)
+                string fillStatus = sel.Week10Sim.fillAmount >= 0.999f
+                    ? "<color=#55FF88>★ COMPLETE FILL (Solid Ceiling Seal / No Slosh)</color>"
+                    : (sel.Week10Sim.fillAmount <= 0.001f
+                        ? "<color=#AAAAAA>★ EVACUATED (0% Empty)</color>"
+                        : $"Slosh Envelope \u03a8(F) = <b>{sel.Week10Sim.CurrentFillMagnitudeEnvelope:F2}</b>" +
+                          (sel.Week10Sim.fillAmount >= 0.40f && sel.Week10Sim.fillAmount <= 0.60f ? " <color=#FFE066>★ PEAK SLOSH</color>" : ""));
+                GUILayout.Label(fillStatus);
+
+                // Quick Fill Presets
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("0% Empty")) { sel.Week10Sim.fillAmount = 0.0f; sel.Week10Sim.UpdateFillCutPlane(false); }
+                if (GUILayout.Button("25%")) { sel.Week10Sim.fillAmount = 0.25f; sel.Week10Sim.UpdateFillCutPlane(false); }
+                if (GUILayout.Button("50%")) { sel.Week10Sim.fillAmount = 0.50f; sel.Week10Sim.UpdateFillCutPlane(false); }
+                if (GUILayout.Button("75%")) { sel.Week10Sim.fillAmount = 0.75f; sel.Week10Sim.UpdateFillCutPlane(false); }
+                GUI.backgroundColor = new Color(0.2f, 0.9f, 0.5f);
+                if (GUILayout.Button("★ 100% Complete Fill")) { sel.Week10Sim.fillAmount = 1.0f; sel.Week10Sim.UpdateFillCutPlane(false); }
+                GUI.backgroundColor = Color.white;
+                sel.Week10Sim.enableAutoFillDrainCycle = GUILayout.Toggle(sel.Week10Sim.enableAutoFillDrainCycle, "Auto Cycle");
+                GUILayout.EndHorizontal();
+
+                // Structural Fracture & Torricelli Outflow Controls
+                GUILayout.Space(2);
+                GUILayout.BeginHorizontal();
+                if (sel.Week10Sim.isCracked)
+                {
+                    GUI.backgroundColor = new Color(0.3f, 0.85f, 0.4f);
+                    if (GUILayout.Button("<b>[REPAIR CRACK (R)]</b>")) sel.Week10Sim.RepairStructuralCrack();
+                    GUI.backgroundColor = Color.white;
+                }
+                else
+                {
+                    GUI.backgroundColor = new Color(1f, 0.35f, 0.25f);
+                    if (GUILayout.Button("<b>[CRACK ENCLOSURE (K)]</b>")) sel.Week10Sim.TriggerStructuralCrack();
+                    GUI.backgroundColor = Color.white;
+                }
+                GUILayout.EndHorizontal();
+
+                // Real-time Torricelli Jet & Drainage Telemetry
+                if (sel.Week10Sim.isCracked)
+                {
+                    string flowColor = sel.Week10Sim.IsOutflowing ? "#FF8844" : "#888888";
+                    GUILayout.Label($"<color={flowColor}><b>Crack State:</b> OPEN ({sel.Week10Sim.crackApertureMm:F1} mm)</color> | Head \u0394h: <b>{sel.Week10Sim.CurrentHydrostaticHead * 100f:F1} cm</b>");
+                    GUILayout.Label($"<color={flowColor}><b>Exit Velocity:</b> {sel.Week10Sim.CurrentExitVelocity:F2} m/s | <b>Discharge Q:</b> {sel.Week10Sim.CurrentDischargeRateMlPerSec:F1} mL/s</color>");
+                    if (!sel.Week10Sim.IsOutflowing)
+                    {
+                        GUILayout.Label("<i>(Outflow cut off: crack is above internal liquid surface level)</i>");
+                    }
+                }
+                else
+                {
+                    GUILayout.Label("<color=#77CCFF><b>Structural Integrity:</b> 100% INTACT (Hermetically Enclosed)</color>");
+                }
+
+                // Fluid Switcher
+                GUILayout.Label("<b>Switch Realistic Fluid Preset:</b>");
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Petrol")) sel.SetFluid(0);
+                if (GUILayout.Button("Mercury")) sel.SetFluid(1);
+                if (GUILayout.Button("MotorOil")) sel.SetFluid(2);
+                if (GUILayout.Button("Coolant")) sel.SetFluid(3);
+                if (GUILayout.Button("CryoGas")) sel.SetFluid(4);
+                if (GUILayout.Button("TreeSap")) sel.SetFluid(5);
+                if (GUILayout.Button("MazeGel")) sel.SetFluid(6);
+                GUILayout.EndHorizontal();
+            }
+            // Week 9 Dynamic Fill & Rheology Controls
+            else if (sel.Week9Sim != null)
+            {
+                GUILayout.Space(3);
+                GUI.color = new Color(0.4f, 1f, 0.85f);
+                GUILayout.Label("<b>WEEK 9 DYNAMIC FILL & PHYSICAL RHEOLOGY:</b>", GUI.skin.label);
+                GUI.color = Color.white;
+
+                GUILayout.Label($"\u03c1: <b>{sel.Week9Sim.Density:F0} kg/m³</b> | \u03bc: <b>{sel.Week9Sim.DynamicViscosity:F4} Pa·s</b> | \u03bd: <b>{sel.Week9Sim.KinematicViscosity:E2} m²/s</b> | \u03c9: <b>{sel.Week9Sim.CurrentResonantFrequency:F2} Hz</b>");
+
+                // Fill Amount Slider & Envelope
+                GUILayout.BeginHorizontal();
+                GUILayout.Label($"Fill: <b>{sel.Week9Sim.fillAmount * 100f:F0}%</b> ([\\] keys)", GUILayout.Width(155));
+                float prevFill = sel.Week9Sim.fillAmount;
+                sel.Week9Sim.fillAmount = GUILayout.HorizontalSlider(sel.Week9Sim.fillAmount, 0.02f, 0.98f);
+                if (Mathf.Abs(sel.Week9Sim.fillAmount - prevFill) > 0.001f)
+                {
+                    sel.Week9Sim.UpdateFillCutPlane(false);
+                }
+                GUILayout.EndHorizontal();
+
+                GUILayout.Label($"Slosh Factor \u03a8(F) = 4F(1-F): <b>{sel.Week9Sim.CurrentFillMagnitudeEnvelope:F2}</b>" +
+                    (sel.Week9Sim.fillAmount >= 0.40f && sel.Week9Sim.fillAmount <= 0.60f ? " <color=#FFE066>★ PEAK SLOSH</color>" : " (Suppressed)"));
+
+                if (sel.Week9Sim.IsGelSlumping)
+                {
+                    GUILayout.Label($"<color=#FFAA55>★ Viscous Fluid Rheology: <b>{sel.Week9Sim.GelSlumpStatus}</b></color>");
+                }
+
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("10% Shallow")) { sel.Week9Sim.fillAmount = 0.10f; sel.Week9Sim.UpdateFillCutPlane(false); }
+                if (GUILayout.Button("50% Peak Resonance")) { sel.Week9Sim.fillAmount = 0.50f; sel.Week9Sim.UpdateFillCutPlane(false); }
+                if (GUILayout.Button("95% Choked Slosh")) { sel.Week9Sim.fillAmount = 0.95f; sel.Week9Sim.UpdateFillCutPlane(false); }
+                sel.Week9Sim.enableAutoFillDrainCycle = GUILayout.Toggle(sel.Week9Sim.enableAutoFillDrainCycle, "Auto Cycle");
+                GUILayout.EndHorizontal();
+
+                GUILayout.Label("<b>Switch Realistic Fluid Preset:</b>");
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Petrol")) sel.SetFluid(0);
+                if (GUILayout.Button("Mercury")) sel.SetFluid(1);
+                if (GUILayout.Button("MotorOil")) sel.SetFluid(2);
+                if (GUILayout.Button("Coolant")) sel.SetFluid(3);
+                if (GUILayout.Button("CryoGas")) sel.SetFluid(4);
+                if (GUILayout.Button("TreeSap")) sel.SetFluid(5);
+                if (GUILayout.Button("MazeGel")) sel.SetFluid(6);
+                GUILayout.EndHorizontal();
+            }
+            else
+            {
+                // Fluid Profile Switcher for Week 7/8
+                GUILayout.Label("<b>Switch Fluid Profile on Selected Bottle:</b>");
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Water")) sel.SetFluid(0);
+                if (GUILayout.Button("VegOil")) sel.SetFluid(1);
+                if (GUILayout.Button("Honey")) sel.SetFluid(2);
+                if (GUILayout.Button("Ketchup")) sel.SetFluid(3);
+                if (GUILayout.Button("Milk")) sel.SetFluid(4);
+                GUILayout.EndHorizontal();
+            }
+
+            // Reset & Focus
+            GUILayout.BeginHorizontal();
+            GUI.backgroundColor = new Color(0.2f, 0.7f, 0.3f);
+            if (GUILayout.Button("Reset This Bottle [R]")) sel.ResetToInitial();
+            GUI.backgroundColor = Color.white;
+            if (GUILayout.Button("Focus Camera [F4]")) SetViewMode(CameraViewMode.IndividualVesselFocus);
+            if (GUILayout.Button("Deselect")) activeVesselIndex = -1;
+            GUILayout.EndHorizontal();
+        }
+        else
+        {
+            GUILayout.Space(4);
+            GUILayout.Label("<b>Click on ANY bottle</b> in the scene to select and move it with authority!");
+            GUILayout.Label("• <b>Left-Click & Drag:</b> Move/shake any bottle in 3D.");
+            GUILayout.Label("• <b>Mouse Wheel:</b> Adjust depth (push/pull bottle).");
+            GUILayout.Label("• <b>3D Move Gizmo:</b> Click & drag X/Y/Z arrows to slide along axes.");
+        }
+
+        GUILayout.Space(6);
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Prev [← / Tab]")) CycleVessel(-1);
+        if (GUILayout.Button("Next [→]")) CycleVessel(1);
+        if (GUILayout.Button("Slosh All [Space]")) TriggerAllSlosh();
+        GUI.backgroundColor = new Color(0.9f, 0.3f, 0.3f);
+        if (GUILayout.Button("Reset All Bottles [Bksp]")) ResetAllBottles();
+        GUI.backgroundColor = Color.white;
+        GUILayout.EndHorizontal();
+
+        GUILayout.EndArea();
+    }
+
+    private void DrawBottomActionBar(VesselEntry sel, float uiScale)
+    {
+        float barWidth = Mathf.Min(1180f * uiScale, Screen.width - 32f);
+        float barHeight = 64f * uiScale;
+        float barX = (Screen.width - barWidth) * 0.5f;
+        float barY = Screen.height - barHeight - (14f * uiScale);
+        Rect bottomRect = new Rect(barX, barY, barWidth, barHeight);
+
+        float btnH = 54f * uiScale;
+
+        GUI.backgroundColor = new Color(0.06f, 0.08f, 0.12f, 0.96f);
+        GUILayout.BeginArea(bottomRect, GUI.skin.box);
+        GUI.backgroundColor = Color.white;
+
+        GUILayout.BeginHorizontal();
+
+        // Prev Vessel
+        if (GUILayout.Button("<b>◀ PREV</b>", bottomBtnStyle, GUILayout.Width(100 * uiScale), GUILayout.Height(btnH)))
+        {
+            CycleVessel(-1);
+        }
+
+        // Active Vessel Name Badge
+        string vesselName = sel != null ? sel.Name : "Showcase Line";
+        string fluidName = sel != null ? sel.GetFluidName() : "7 Enclosed Vessels";
+
+        // Main Cracking / Shatter Outflow Action Button
+        UniversalAdaptiveFluidController uSim = sel?.UniversalSim;
+        Week10FluidCrackingFlowController w10 = sel?.Week10Sim;
+        if (uSim == null && w10 == null && sel != null && sel.Transform != null)
+        {
+            w10 = sel.Transform.GetComponent<Week10FluidCrackingFlowController>();
+            if (w10 == null) uSim = sel.Transform.GetComponent<UniversalAdaptiveFluidController>();
+            sel.Week10Sim = w10;
+            sel.UniversalSim = uSim;
+        }
+
+        string flowStatus = "<color=#88FF88>● SEALED</color>";
+        if (w10 != null)
+        {
+            if (!w10.isCracked) flowStatus = "<color=#88FF88>● INTACT</color>";
+            else if (w10.IsOutflowing) flowStatus = $"<color=#FFB020>🌊 FLOWING {w10.OutwardFlowRateMilliLitersPerSec:F0} mL/s</color>";
+            else flowStatus = "<color=#70CCFF>⚖ EQUILIBRIUM</color>";
+        }
+        else if (uSim != null)
+        {
+            if (!uSim.isCracked) flowStatus = "<color=#88FF88>● INTACT</color>";
+            else if (uSim.IsOutflowing) flowStatus = $"<color=#FFB020>🌊 FLOWING {uSim.CurrentDischargeRateMlPerSec:F0} mL/s</color>";
+            else flowStatus = "<color=#70CCFF>⚖ EQUILIBRIUM</color>";
+        }
+
+        GUILayout.BeginVertical(GUILayout.Width(240 * uiScale));
+        GUILayout.Label($"<b>{vesselName}</b>", bottomBadgeTitleStyle);
+        GUILayout.Label($"<color=#77CCFF>{fluidName}</color> | {flowStatus}", bottomBadgeSubStyle);
+        GUILayout.EndVertical();
+
+        if (sel == null && allVessels.Count > 0)
+        {
+            activeVesselIndex = 0;
+            sel = allVessels[0];
+        }
+
+        if (uSim != null)
+        {
+            if (uSim.isCracked)
+            {
+                GUI.backgroundColor = new Color(0.2f, 0.88f, 0.45f);
+                if (GUILayout.Button("<b>🔄 RESTORE & SEAL OBJECT</b>", bottomRestoreBtnStyle, GUILayout.Height(btnH), GUILayout.ExpandWidth(true)))
+                {
+                    uSim.RepairCrack();
+                }
+                GUI.backgroundColor = Color.white;
+            }
+            else
+            {
+                GUI.backgroundColor = new Color(1.0f, 0.28f, 0.18f);
+                if (GUILayout.Button("<b>💥 BREAK & SHATTER OBJECT (FLUID OUTFLOW)</b>", bottomActionBtnStyle, GUILayout.Height(btnH), GUILayout.ExpandWidth(true)))
+                {
+                    uSim.TriggerCrack();
+                }
+                GUI.backgroundColor = Color.white;
+            }
+
+            // Quick Complete Fill Toggle Button
+            GUI.backgroundColor = uSim.fillAmount >= 0.99f ? new Color(0.2f, 0.82f, 0.98f) : Color.white;
+            if (GUILayout.Button(uSim.fillAmount >= 0.99f ? "<b>100% FULL</b>" : "<b>50% FILL</b>", bottomToggleBtnStyle, GUILayout.Width(130 * uiScale), GUILayout.Height(btnH)))
+            {
+                uSim.fillAmount = uSim.fillAmount >= 0.99f ? 0.50f : 1.0f;
+                uSim.UpdateFillCutPlane(false);
+            }
+            GUI.backgroundColor = Color.white;
+
+            // Quick Rotate Mode Toggle Button
+            GUI.backgroundColor = gizmoMode == GizmoToolMode.Rotate ? new Color(0.25f, 0.90f, 0.45f) : Color.white;
+            if (GUILayout.Button(gizmoMode == GizmoToolMode.Rotate ? "<b>★ ROTATE [G]</b>" : "<b>MOVE [G]</b>", bottomToggleBtnStyle, GUILayout.Width(130 * uiScale), GUILayout.Height(btnH)))
+            {
+                gizmoMode = (gizmoMode == GizmoToolMode.Rotate) ? GizmoToolMode.Move : GizmoToolMode.Rotate;
+            }
+            GUI.backgroundColor = Color.white;
+
+            if (GUILayout.Button("<b>⟲ TILT -15° (Q)</b>", bottomToggleBtnStyle, GUILayout.Width(125 * uiScale), GUILayout.Height(btnH)))
+            {
+                sel.Transform.Rotate(Vector3.forward, 15f, Space.World);
+            }
+            if (GUILayout.Button("<b>TILT +15° ⟳ (E)</b>", bottomToggleBtnStyle, GUILayout.Width(125 * uiScale), GUILayout.Height(btnH)))
+            {
+                sel.Transform.Rotate(Vector3.forward, -15f, Space.World);
+            }
+            if (GUILayout.Button("<b>↺ LEVEL (X)</b>", bottomToggleBtnStyle, GUILayout.Width(105 * uiScale), GUILayout.Height(btnH)))
+            {
+                sel.Transform.rotation = Quaternion.Euler(0f, sel.Transform.eulerAngles.y, 0f);
+            }
+        }
+        else if (w10 != null)
+        {
+            if (w10.isCracked)
+            {
+                GUI.backgroundColor = new Color(0.2f, 0.88f, 0.45f);
+                if (GUILayout.Button("<b>🔄 RESTORE & SEAL OBJECT</b>", bottomRestoreBtnStyle, GUILayout.Height(btnH), GUILayout.ExpandWidth(true)))
+                {
+                    w10.RepairCrack();
+                }
+                GUI.backgroundColor = Color.white;
+            }
+            else
+            {
+                GUI.backgroundColor = new Color(1.0f, 0.28f, 0.18f);
+                if (GUILayout.Button("<b>💥 BREAK & SHATTER OBJECT (FLUID OUTFLOW)</b>", bottomActionBtnStyle, GUILayout.Height(btnH), GUILayout.ExpandWidth(true)))
+                {
+                    w10.TriggerCrack();
+                }
+                GUI.backgroundColor = Color.white;
+            }
+
+            // Quick Complete Fill Toggle Button
+            GUI.backgroundColor = w10.fillAmount >= 0.99f ? new Color(0.2f, 0.82f, 0.98f) : Color.white;
+            if (GUILayout.Button(w10.fillAmount >= 0.99f ? "<b>100% FULL</b>" : "<b>50% FILL</b>", bottomToggleBtnStyle, GUILayout.Width(130 * uiScale), GUILayout.Height(btnH)))
+            {
+                w10.fillAmount = w10.fillAmount >= 0.99f ? 0.50f : 1.0f;
+                w10.UpdateFillCutPlane(false);
+            }
+            GUI.backgroundColor = Color.white;
+
+            // Quick Rotate Mode Toggle Button
+            GUI.backgroundColor = gizmoMode == GizmoToolMode.Rotate ? new Color(0.25f, 0.90f, 0.45f) : Color.white;
+            if (GUILayout.Button(gizmoMode == GizmoToolMode.Rotate ? "<b>★ ROTATE [G]</b>" : "<b>MOVE [G]</b>", bottomToggleBtnStyle, GUILayout.Width(130 * uiScale), GUILayout.Height(btnH)))
+            {
+                gizmoMode = (gizmoMode == GizmoToolMode.Rotate) ? GizmoToolMode.Move : GizmoToolMode.Rotate;
+            }
+            GUI.backgroundColor = Color.white;
+
+            if (GUILayout.Button("<b>⟲ TILT -15° (Q)</b>", bottomToggleBtnStyle, GUILayout.Width(125 * uiScale), GUILayout.Height(btnH)))
+            {
+                sel.Transform.Rotate(Vector3.forward, 15f, Space.World);
+            }
+            if (GUILayout.Button("<b>TILT +15° ⟳ (E)</b>", bottomToggleBtnStyle, GUILayout.Width(125 * uiScale), GUILayout.Height(btnH)))
+            {
+                sel.Transform.Rotate(Vector3.forward, -15f, Space.World);
+            }
+            if (GUILayout.Button("<b>↺ LEVEL (X)</b>", bottomToggleBtnStyle, GUILayout.Width(105 * uiScale), GUILayout.Height(btnH)))
+            {
+                sel.Transform.rotation = Quaternion.Euler(0f, sel.Transform.eulerAngles.y, 0f);
+            }
+        }
+        else if (sel != null && sel.Transform != null)
+        {
+            GUI.backgroundColor = new Color(1.0f, 0.28f, 0.18f);
+            if (GUILayout.Button($"<b>💥 BREAK & SHATTER {sel.Name.ToUpper()} (FLUID OUTFLOW)</b>", bottomActionBtnStyle, GUILayout.Height(btnH), GUILayout.ExpandWidth(true)))
+            {
+                uSim = sel.Transform.gameObject.AddComponent<UniversalAdaptiveFluidController>();
+                sel.UniversalSim = uSim;
+                uSim.TriggerCrack();
+            }
+            GUI.backgroundColor = Color.white;
+        }
+        else
+        {
+            if (GUILayout.Button("<b>SELECT A VESSEL TO BREAK</b>", bottomBtnStyle, GUILayout.Height(btnH), GUILayout.ExpandWidth(true)))
+            {
+                SetViewMode(CameraViewMode.Week10_EnclosedCrackingLine);
+            }
+        }
+
+        // Next Vessel
+        if (GUILayout.Button("<b>NEXT ▶</b>", bottomBtnStyle, GUILayout.Width(100 * uiScale), GUILayout.Height(btnH)))
+        {
+            CycleVessel(1);
+        }
+
+        // Global Restart / Reset All Button
+        GUI.backgroundColor = new Color(0.88f, 0.22f, 0.22f);
+        if (GUILayout.Button("<b>↺ RESTART ALL</b>", bottomRestartBtnStyle, GUILayout.Width(150 * uiScale), GUILayout.Height(btnH)))
+        {
+            RestartAllWeek10Vessels();
+        }
+        GUI.backgroundColor = Color.white;
+
+        GUILayout.EndHorizontal();
+        GUILayout.EndArea();
+    }
+
+    public void RestartAllWeek10Vessels()
+    {
+        var w10List = FindObjectsOfType<Week10FluidCrackingFlowController>();
+        foreach (var w in w10List)
+        {
+            if (w != null) w.ResetVessel();
+        }
+
+        var uList = FindObjectsOfType<UniversalAdaptiveFluidController>();
+        foreach (var u in uList)
+        {
+            if (u != null) u.ResetVessel();
+        }
+
+        ResetAllBottles();
+    }
+}
