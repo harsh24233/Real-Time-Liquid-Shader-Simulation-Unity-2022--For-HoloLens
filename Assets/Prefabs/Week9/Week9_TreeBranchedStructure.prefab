@@ -325,9 +325,9 @@ MonoBehaviour:
   geometricTortuosity: 2.6
   fluidRenderer: {fileID: 1375989729850473293}
   useSharedMaterialInEditor: 1
-  translationSensitivity: 1.2
-  rotationSensitivity: 0.7
+  translationSensitivity: 0.35
+  rotationSensitivity: 0.2
   maxWobbleDisplacement: 0.45
   enableViscousCreepSlump: 1
-  gelYieldDelay: 0.55
-  gelSlumpDuration: 2.4
+  gelYieldDelay: 0.5
+  gelSlumpDuration: 3.5

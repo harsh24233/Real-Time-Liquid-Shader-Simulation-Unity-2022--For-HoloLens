@@ -272,6 +272,26 @@ public class Week9FluidDynamicsController : MonoBehaviour
         densityKgM3 = prof.densityKgM3;
         dynamicViscosityPaS = prof.dynamicViscosityPaS;
 
+        if (type == Week9FluidType.TreeSapResin)
+        {
+            translationSensitivity = 0.18f;
+            rotationSensitivity = 0.12f;
+            gelSlumpDuration = 3.5f;
+            gelYieldDelay = 0.50f;
+        }
+        else if (type == Week9FluidType.HeavyMazeGel)
+        {
+            translationSensitivity = 0.20f;
+            rotationSensitivity = 0.12f;
+            gelSlumpDuration = 4.8f;
+            gelYieldDelay = 0.85f;
+        }
+        else
+        {
+            translationSensitivity = 1.2f;
+            rotationSensitivity = 0.7f;
+        }
+
         // Reset gel normal states
         gelSurfaceNormal = Vector3.up;
         gelHesitationTimer = 0f;
@@ -312,8 +332,16 @@ public class Week9FluidDynamicsController : MonoBehaviour
             case Week9StructureType.ToroidalTank: geometricTortuosity = 1.75f; break;
             case Week9StructureType.YJunctionManifold: geometricTortuosity = 2.45f; break;
             case Week9StructureType.CapsuleTank: geometricTortuosity = 1.10f; break;
-            case Week9StructureType.TreeBranchedStructure: geometricTortuosity = 2.60f; break;
-            case Week9StructureType.MazeMultichamber: geometricTortuosity = 3.10f; break;
+            case Week9StructureType.TreeBranchedStructure:
+                geometricTortuosity = 2.60f;
+                maxWobbleDisplacement = 0.08f;
+                break;
+            case Week9StructureType.MazeMultichamber:
+                geometricTortuosity = 3.10f;
+                localYMin = -0.20f;
+                localYMax = 0.20f;
+                maxWobbleDisplacement = 0.05f;
+                break;
         }
     }
 
@@ -433,16 +461,20 @@ public class Week9FluidDynamicsController : MonoBehaviour
 
         float activeMaxLimit = maxWobbleDisplacement * Mathf.Max(0.12f, currentFillMagnitudeEnvelope);
 
-        // Excitation target tilt in radians/normalized angle
+        // Excitation target tilt in radians/normalized angle (calibrated for thick, slow resin response)
+        float effTransSens = (fluidType == Week9FluidType.TreeSapResin) ? translationSensitivity * 0.30f : translationSensitivity;
+        float effRotSens = (fluidType == Week9FluidType.TreeSapResin) ? rotationSensitivity * 0.25f : rotationSensitivity;
+        float effAngAcc = (fluidType == Week9FluidType.TreeSapResin) ? 0f : 0.05f;
+
         float targetTiltX = Mathf.Clamp(
-            (-currentVelocity.z * 0.18f - acceleration.z * 0.025f) * translationSensitivity * densityInertiaFactor +
-            (angularVel.x * 0.55f + angularAcc.x * 0.05f) * rotationSensitivity,
+            (-currentVelocity.z * 0.18f - acceleration.z * 0.025f) * effTransSens * densityInertiaFactor +
+            (angularVel.x * 0.55f + angularAcc.x * effAngAcc) * effRotSens,
             -activeMaxLimit, activeMaxLimit
         ) * currentFillMagnitudeEnvelope * viscousInertiaSuppression;
 
         float targetTiltZ = Mathf.Clamp(
-            (currentVelocity.x * 0.18f + acceleration.x * 0.025f) * translationSensitivity * densityInertiaFactor -
-            (angularVel.z * 0.55f + angularAcc.z * 0.05f) * rotationSensitivity,
+            (currentVelocity.x * 0.18f + acceleration.x * 0.025f) * effTransSens * densityInertiaFactor -
+            (angularVel.z * 0.55f + angularAcc.z * effAngAcc) * effRotSens,
             -activeMaxLimit, activeMaxLimit
         ) * currentFillMagnitudeEnvelope * viscousInertiaSuppression;
 
@@ -502,8 +534,8 @@ public class Week9FluidDynamicsController : MonoBehaviour
         {
             // Critically damped / Overdamped: smooth creeping relaxation (Tree Sap & Heavy Gel)
             // Viscous fluids cannot exceed physical creep velocity and approach target monotonically without vibration
-            float smoothTime = Mathf.Clamp(2.0f / Mathf.Max(gamma, 1f), 0.25f, 3.0f);
-            float maxSpeed = maxLimit * (1.5f / (1f + dynamicViscosityPaS * 0.2f));
+            float smoothTime = (fluidType == Week9FluidType.TreeSapResin) ? 2.0f : Mathf.Clamp(2.0f / Mathf.Max(gamma, 1f), 0.25f, 3.0f);
+            float maxSpeed = (fluidType == Week9FluidType.TreeSapResin) ? maxLimit * 0.15f : maxLimit * (1.5f / (1f + dynamicViscosityPaS * 0.2f));
             amount = Mathf.SmoothDamp(amount, target, ref velocity, smoothTime, maxSpeed, dt);
             amount = Mathf.Clamp(amount, -maxLimit, maxLimit);
         }
@@ -568,7 +600,16 @@ public class Week9FluidDynamicsController : MonoBehaviour
         if (Mathf.Abs(angleDeg) > 0.02f)
         {
             // Rotate the fluid surface normal with container orientation
-            gelSurfaceNormal = deltaRot * gelSurfaceNormal;
+            Vector3 rotatedNormal = deltaRot * gelSurfaceNormal;
+            if (fluidType == Week9FluidType.TreeSapResin)
+            {
+                // Smooth viscous rotational coupling: resin lags container rotation rather than instant snap
+                gelSurfaceNormal = Vector3.RotateTowards(gelSurfaceNormal, rotatedNormal, 40f * Mathf.Deg2Rad * dt, 0f);
+            }
+            else
+            {
+                gelSurfaceNormal = rotatedNormal;
+            }
             gelSurfaceNormal.Normalize();
 
             // Refresh hesitation delay timer (heavy gel yield stress resists immediate flow)

@@ -21,7 +21,8 @@ Material:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_Name: Week10_MazeGel_Fluid
-  m_Shader: {fileID: -6465566751694194690, guid: 5d72d9b484eee564898649afd59ba58b, type: 3}
+  m_Shader: {fileID: -6465566751694194690, guid: 5d72d9b484eee564898649afd59ba58b,
+    type: 3}
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords: []
@@ -110,7 +111,7 @@ Material:
     - _DstBlend: 0
     - _DstBlendAlpha: 0
     - _EnvironmentReflections: 1
-    - _Float: 0.26285958
+    - _Float: 0
     - _GlossMapScale: 0
     - _Glossiness: 0
     - _GlossyReflections: 0
@@ -128,8 +129,8 @@ Material:
     - _SrcBlend: 1
     - _SrcBlendAlpha: 1
     - _Surface: 0
-    - _WobbleX: 0
-    - _WobbleZ: 0
+    - _WobbleX: -0.0007768882
+    - _WobbleZ: -0.004379056
     - _WorkflowMode: 1
     - _XRMotionVectorsPass: 1
     - _ZWrite: 1
@@ -142,4 +143,3 @@ Material:
     - _SpecColor: {r: 0.19999996, g: 0.19999996, b: 0.19999996, a: 1}
     - _main_color: {r: 0.45, g: 0.02, b: 0.15, a: 0.95}
   m_BuildTextureStacks: []
-  m_AllowLocking: 1

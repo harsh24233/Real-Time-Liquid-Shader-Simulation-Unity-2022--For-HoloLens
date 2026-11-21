@@ -350,6 +350,17 @@ public class Week10FluidCrackingFlowController : MonoBehaviour
         densityKgM3 = prof.densityKgM3;
         dynamicViscosityPaS = prof.dynamicViscosityPaS;
 
+        if (type == Week10FluidType.TreeSapResin)
+        {
+            translationSensitivity = 0.35f;
+            rotationSensitivity = 0.20f;
+        }
+        else
+        {
+            translationSensitivity = 1.2f;
+            rotationSensitivity = 0.7f;
+        }
+
         gelSurfaceNormal = Vector3.up;
         gelHesitationTimer = 0f;
         gelClingX = 0f;
@@ -440,6 +451,7 @@ public class Week10FluidCrackingFlowController : MonoBehaviour
             case Week10StructureType.TreeBranchedStructure:
                 geometricTortuosity = 2.60f;
                 totalEnclosedVolumeLiters = 2.2f;
+                maxWobbleDisplacement = 0.08f;
                 // Crack on lower cylindrical trunk wall well above base flange/plinth
                 crackLocalPosition = new Vector3(0.055f, -0.06f, 0.0f);
                 crackLocalNormal = new Vector3(1.0f, 0.0f, 0f).normalized;
@@ -447,6 +459,9 @@ public class Week10FluidCrackingFlowController : MonoBehaviour
             case Week10StructureType.MazeMultichamber:
                 geometricTortuosity = 3.10f;
                 totalEnclosedVolumeLiters = 3.5f;
+                localYMin = -0.20f;
+                localYMax = 0.20f;
+                maxWobbleDisplacement = 0.05f;
                 // Crack on outer chamber wall well above floor frame
                 crackLocalPosition = new Vector3(0.18f, -0.05f, 0.0f);
                 crackLocalNormal = new Vector3(1f, 0f, 0f);
@@ -1869,15 +1884,20 @@ public class Week10FluidCrackingFlowController : MonoBehaviour
             return;
         }
 
+        // Excitation target tilt in radians/normalized angle (calibrated for thick, slow resin response)
+        float effTransSens = (fluidType == Week10FluidType.TreeSapResin) ? translationSensitivity * 0.30f : translationSensitivity;
+        float effRotSens = (fluidType == Week10FluidType.TreeSapResin) ? rotationSensitivity * 0.25f : rotationSensitivity;
+        float effAngAcc = (fluidType == Week10FluidType.TreeSapResin) ? 0f : 0.05f;
+
         float targetTiltX = Mathf.Clamp(
-            (-currentVelocity.z * 0.18f - acceleration.z * 0.025f) * translationSensitivity * densityInertiaFactor +
-            (angularVel.x * 0.55f + angularAcc.x * 0.05f) * rotationSensitivity,
+            (-currentVelocity.z * 0.18f - acceleration.z * 0.025f) * effTransSens * densityInertiaFactor +
+            (angularVel.x * 0.55f + angularAcc.x * effAngAcc) * effRotSens,
             -activeMaxLimit, activeMaxLimit
         ) * currentFillMagnitudeEnvelope * viscousInertiaSuppression;
 
         float targetTiltZ = Mathf.Clamp(
-            (currentVelocity.x * 0.18f + acceleration.x * 0.025f) * translationSensitivity * densityInertiaFactor -
-            (angularVel.z * 0.55f + angularAcc.z * 0.05f) * rotationSensitivity,
+            (currentVelocity.x * 0.18f + acceleration.x * 0.025f) * effTransSens * densityInertiaFactor -
+            (angularVel.z * 0.55f + angularAcc.z * effAngAcc) * effRotSens,
             -activeMaxLimit, activeMaxLimit
         ) * currentFillMagnitudeEnvelope * viscousInertiaSuppression;
 
@@ -1922,8 +1942,8 @@ public class Week10FluidCrackingFlowController : MonoBehaviour
         }
         else
         {
-            float smoothTime = Mathf.Clamp(2.0f / Mathf.Max(gamma, 1f), 0.25f, 3.0f);
-            float maxSpeed = maxLimit * (1.5f / (1f + dynamicViscosityPaS * 0.2f));
+            float smoothTime = (fluidType == Week10FluidType.TreeSapResin) ? 2.0f : Mathf.Clamp(2.0f / Mathf.Max(gamma, 1f), 0.25f, 3.0f);
+            float maxSpeed = (fluidType == Week10FluidType.TreeSapResin) ? maxLimit * 0.15f : maxLimit * (1.5f / (1f + dynamicViscosityPaS * 0.2f));
             amount = Mathf.SmoothDamp(amount, target, ref velocity, smoothTime, maxSpeed, dt);
             amount = Mathf.Clamp(amount, -maxLimit, maxLimit);
         }
@@ -1951,7 +1971,16 @@ public class Week10FluidCrackingFlowController : MonoBehaviour
         if (angleDeg > 180f) angleDeg -= 360f;
         if (Mathf.Abs(angleDeg) > 0.02f)
         {
-            gelSurfaceNormal = deltaRot * gelSurfaceNormal;
+            Vector3 rotatedNormal = deltaRot * gelSurfaceNormal;
+            if (fluidType == Week10FluidType.TreeSapResin)
+            {
+                // Smooth viscous rotational coupling: resin lags container rotation rather than instant snap
+                gelSurfaceNormal = Vector3.RotateTowards(gelSurfaceNormal, rotatedNormal, 40f * Mathf.Deg2Rad * dt, 0f);
+            }
+            else
+            {
+                gelSurfaceNormal = rotatedNormal;
+            }
             gelSurfaceNormal.Normalize();
 
             if (effectiveYieldDelay > 0f)

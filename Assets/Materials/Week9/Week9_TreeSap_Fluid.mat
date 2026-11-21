@@ -21,7 +21,8 @@ Material:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_Name: Week9_TreeSap_Fluid
-  m_Shader: {fileID: -6465566751694194690, guid: 5d72d9b484eee564898649afd59ba58b, type: 3}
+  m_Shader: {fileID: -6465566751694194690, guid: 5d72d9b484eee564898649afd59ba58b,
+    type: 3}
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords: []
@@ -142,4 +143,3 @@ Material:
     - _SpecColor: {r: 0.19999996, g: 0.19999996, b: 0.19999996, a: 1}
     - _main_color: {r: 0.82, g: 0.38, b: 0.05, a: 0.92}
   m_BuildTextureStacks: []
-  m_AllowLocking: 1

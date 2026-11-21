@@ -866,8 +866,11 @@ public class UniversalAdaptiveFluidController : MonoBehaviour
 
         float maxLimit = 0.45f * Mathf.Max(0.05f, envelope);
 
-        float targetX = Mathf.Clamp(-acceleration.z * 0.04f + angularVel.x * 0.35f, -maxLimit, maxLimit) * envelope;
-        float targetZ = Mathf.Clamp(acceleration.x * 0.04f - angularVel.z * 0.35f, -maxLimit, maxLimit) * envelope;
+        float effTransSens = (fluidType == FluidType.TreeSapResin) ? 0.012f : 0.04f;
+        float effRotSens = (fluidType == FluidType.TreeSapResin) ? 0.08f : 0.35f;
+
+        float targetX = Mathf.Clamp(-acceleration.z * effTransSens + angularVel.x * effRotSens, -maxLimit, maxLimit) * envelope;
+        float targetZ = Mathf.Clamp(acceleration.x * effTransSens - angularVel.z * effRotSens, -maxLimit, maxLimit) * envelope;
 
         float omegaN = 2f * Mathf.PI * Mathf.Max(naturalFreq, 0.1f);
         UpdateOscillator(targetX, omegaN, damping, dt, ref wobbleX, ref wobbleVelocityX, maxLimit);
@@ -890,8 +893,9 @@ public class UniversalAdaptiveFluidController : MonoBehaviour
         }
         else
         {
-            float smoothTime = Mathf.Clamp(2.0f / Mathf.Max(gamma, 1f), 0.25f, 3.0f);
-            amount = Mathf.SmoothDamp(amount, target, ref velocity, smoothTime, 2.0f, dt);
+            float smoothTime = (fluidType == FluidType.TreeSapResin) ? 2.0f : Mathf.Clamp(2.0f / Mathf.Max(gamma, 1f), 0.25f, 3.0f);
+            float maxSpeed = (fluidType == FluidType.TreeSapResin) ? maxLimit * 0.15f : 2.0f;
+            amount = Mathf.SmoothDamp(amount, target, ref velocity, smoothTime, maxSpeed, dt);
             amount = Mathf.Clamp(amount, -maxLimit, maxLimit);
         }
     }
@@ -912,9 +916,18 @@ public class UniversalAdaptiveFluidController : MonoBehaviour
         if (angleDeg > 180f) angleDeg -= 360f;
         if (Mathf.Abs(angleDeg) > 0.02f)
         {
-            gelSurfaceNormal = deltaRot * gelSurfaceNormal;
+            Vector3 rotatedNormal = deltaRot * gelSurfaceNormal;
+            if (fluidType == FluidType.TreeSapResin)
+            {
+                gelSurfaceNormal = Vector3.RotateTowards(gelSurfaceNormal, rotatedNormal, 40f * Mathf.Deg2Rad * dt, 0f);
+                gelHesitationTimer = 0.50f;
+            }
+            else
+            {
+                gelSurfaceNormal = rotatedNormal;
+                if (prof.dynamicViscosityPaS > 10f) gelHesitationTimer = 0.85f;
+            }
             gelSurfaceNormal.Normalize();
-            if (prof.dynamicViscosityPaS > 10f) gelHesitationTimer = 0.85f;
         }
 
         if (gelHesitationTimer > 0f)
@@ -923,7 +936,8 @@ public class UniversalAdaptiveFluidController : MonoBehaviour
         }
         else
         {
-            gelSurfaceNormal = Vector3.RotateTowards(gelSurfaceNormal, Vector3.up, (60f / Mathf.Max(1f, prof.dynamicViscosityPaS * 0.2f)) * Mathf.Deg2Rad * dt, 0f);
+            float slumpRate = (fluidType == FluidType.TreeSapResin) ? (90f / 3.5f) : (60f / Mathf.Max(1f, prof.dynamicViscosityPaS * 0.2f));
+            gelSurfaceNormal = Vector3.RotateTowards(gelSurfaceNormal, Vector3.up, slumpRate * Mathf.Deg2Rad * dt, 0f);
             gelSurfaceNormal.Normalize();
         }
 
