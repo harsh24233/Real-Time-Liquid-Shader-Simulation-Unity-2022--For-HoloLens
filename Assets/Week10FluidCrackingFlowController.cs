@@ -1247,7 +1247,7 @@ public class Week10FluidCrackingFlowController : MonoBehaviour
             rb.mass = 0.04f;
             Vector3 blastDir = (crackWorldNorm * 1.9f + Random.insideUnitSphere * 0.75f).normalized;
             float blastSpeed = Random.Range(1.4f, 3.2f);
-            rb.linearVelocity = blastDir * blastSpeed + (currentVelocity * 0.4f);
+            rb.velocity = blastDir * blastSpeed + (currentVelocity * 0.4f);
             rb.angularVelocity = Random.insideUnitSphere * Random.Range(20f, 60f);
 
             shard.AddComponent<BoxCollider>();

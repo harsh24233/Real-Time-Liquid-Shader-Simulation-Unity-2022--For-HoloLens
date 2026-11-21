@@ -1482,7 +1482,7 @@ public class UniversalAdaptiveFluidController : MonoBehaviour
 
             Rigidbody rb = shard.AddComponent<Rigidbody>();
             rb.mass = 0.03f;
-            rb.linearVelocity = (crackNorm * 2.2f + UnityEngine.Random.insideUnitSphere * 0.8f);
+            rb.velocity = (crackNorm * 2.2f + UnityEngine.Random.insideUnitSphere * 0.8f);
             rb.angularVelocity = UnityEngine.Random.insideUnitSphere * 30f;
             shard.AddComponent<BoxCollider>();
             spawnedShards.Add(shard);
