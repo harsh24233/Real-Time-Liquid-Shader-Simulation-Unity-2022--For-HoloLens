@@ -32,7 +32,7 @@ Transform:
   - {fileID: 2232751159867979860}
   m_Father: {fileID: 3645810876168877019}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &1140498098036670946
+--- !u!1 &3198524349098548344
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -40,9 +40,9 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 7169017112866942360}
-  - component: {fileID: 5765818405057148345}
-  - component: {fileID: 8690303924099208774}
+  - component: {fileID: 4129525744103111131}
+  - component: {fileID: 5425608615288053831}
+  - component: {fileID: 6749496555650464596}
   m_Layer: 0
   m_Name: default
   m_TagString: Untagged
@@ -50,13 +50,13 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!4 &7169017112866942360
+--- !u!4 &4129525744103111131
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1140498098036670946}
+  m_GameObject: {fileID: 3198524349098548344}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: -0, z: -0, w: 1}
   m_LocalPosition: {x: -0, y: 0, z: 0}
@@ -65,21 +65,21 @@ Transform:
   m_Children: []
   m_Father: {fileID: 1767509632252555275}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!33 &5765818405057148345
+--- !u!33 &5425608615288053831
 MeshFilter:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1140498098036670946}
+  m_GameObject: {fileID: 3198524349098548344}
   m_Mesh: {fileID: -2432090755550338912, guid: 74937ea69cc04611892a6bc713b9259a, type: 3}
---- !u!23 &8690303924099208774
+--- !u!23 &6749496555650464596
 MeshRenderer:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1140498098036670946}
+  m_GameObject: {fileID: 3198524349098548344}
   m_Enabled: 1
   m_CastShadows: 1
   m_ReceiveShadows: 1
@@ -90,15 +90,10 @@ MeshRenderer:
   m_ReflectionProbeUsage: 1
   m_RayTracingMode: 2
   m_RayTraceProcedural: 0
-  m_RayTracingAccelStructBuildFlagsOverride: 0
-  m_RayTracingAccelStructBuildFlags: 1
-  m_SmallMeshCulling: 1
-  m_ForceMeshLod: -1
-  m_MeshLodSelectionBias: 0
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
-  - {fileID: 2100000, guid: 749bc9d529234a95b86664c23751e57e, type: 2}
+  - {fileID: 2100000, guid: 56d4b88289a1678428306dc11cfd1998, type: 2}
   m_StaticBatchInfo:
     firstSubMesh: 0
     subMeshCount: 0
@@ -116,11 +111,9 @@ MeshRenderer:
   m_AutoUVMaxDistance: 0.5
   m_AutoUVMaxAngle: 89
   m_LightmapParameters: {fileID: 0}
-  m_GlobalIlluminationMeshLod: 0
   m_SortingLayerID: 0
   m_SortingLayer: 0
   m_SortingOrder: 0
-  m_MaskInteraction: 0
   m_AdditionalVertexStreams: {fileID: 0}
 --- !u!1 &3593337794746579465
 GameObject:
@@ -167,7 +160,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 29bd82f981df4b9c865cdbe3f99cfbb2, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::ArbitraryViscousFluidFriction
+  m_EditorClassIdentifier: 
   fluidType: 2
   fluidDensity: 1420
   dynamicViscosity: 10
@@ -178,23 +171,23 @@ MonoBehaviour:
   geometryFrictionFactor: 1.9
   wallAdhesion: 0.85
   containerTransform: {fileID: 3645810876168877019}
-  fluidRenderer: {fileID: 8690303924099208774}
+  fluidRenderer: {fileID: 6749496555650464596}
   glassRenderer: {fileID: 682602848440551887}
   waterMaterial: {fileID: 2100000, guid: b04afb3e5129ecd49b332697685882e4, type: 2}
   vegOilMaterial: {fileID: 2100000, guid: 18d9a9567c1d8c3478fd4124fbd97c62, type: 2}
-  honeyMaterial: {fileID: 2100000, guid: 749bc9d529234a95b86664c23751e57e, type: 2}
+  honeyMaterial: {fileID: 2100000, guid: 56d4b88289a1678428306dc11cfd1998, type: 2}
   ketchupMaterial: {fileID: 2100000, guid: 3934f5fb9c6ecb048aa9b022f1276801, type: 2}
   milkMaterial: {fileID: 2100000, guid: 76f8499f487a86e41a00c78c0a2db040, type: 2}
-  maxWobble: 0.3
-  currentFrequency: 0.10024238
+  maxWobble: 0.28
+  currentFrequency: 0.08702677
   decayDuration: 0.15
-  moveSensitivity: 0.7
+  moveSensitivity: 0.55
   rotateSensitivity: 0.35
   currentSloshAngleX: 0
   currentSloshAngleZ: 0
   effectiveDampingRatio: 1
-  totalWallDragResistance: 83.111694
-  enableKeyboardControls: 1
+  totalWallDragResistance: 73.05926
+  enableKeyboardControls: 0
   enableMouseDrag: 1
   moveSpeed: 3
 --- !u!1 &3687366637417397908
@@ -255,11 +248,6 @@ MeshRenderer:
   m_ReflectionProbeUsage: 1
   m_RayTracingMode: 2
   m_RayTraceProcedural: 0
-  m_RayTracingAccelStructBuildFlagsOverride: 0
-  m_RayTracingAccelStructBuildFlags: 1
-  m_SmallMeshCulling: 1
-  m_ForceMeshLod: -1
-  m_MeshLodSelectionBias: 0
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
@@ -281,11 +269,9 @@ MeshRenderer:
   m_AutoUVMaxDistance: 0.5
   m_AutoUVMaxAngle: 89
   m_LightmapParameters: {fileID: 0}
-  m_GlobalIlluminationMeshLod: 0
   m_SortingLayerID: 0
   m_SortingLayer: 0
   m_SortingOrder: 0
-  m_MaskInteraction: 0
   m_AdditionalVertexStreams: {fileID: 0}
 --- !u!1 &3723767766319291470
 GameObject:
@@ -316,6 +302,6 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
-  - {fileID: 7169017112866942360}
+  - {fileID: 4129525744103111131}
   m_Father: {fileID: 3645810876168877019}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
